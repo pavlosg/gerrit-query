@@ -242,8 +242,16 @@ def cmd_change(g, args):
     c = g.get(change_path(number), [("o", o) for o in (
         "DETAILED_ACCOUNTS", "DETAILED_LABELS", "MESSAGES", "CURRENT_REVISION",
         "CURRENT_FILES", "CURRENT_COMMIT")])
+    # A reply's text lives in its comments, not in the change message ("(1 comment)").
+    comments = {} if args.no_comments else g.get(change_path(number, "comments"))
     if args.json:
+        if not args.no_comments:
+            c["comments"] = comments
         return emit_json(c)
+    by_message = {}
+    for path, lst in comments.items():
+        for cm in lst:
+            by_message.setdefault(cm.get("change_message_id"), []).append((path, cm))
     rev = c.get("revisions", {}).get(c.get("current_revision"), {})
     print(f"Change {c['_number']}: {c['subject']}")
     print(f"  https://{g.host}/c/{c['project']}/+/{c['_number']}")
@@ -295,6 +303,13 @@ def cmd_change(g, args):
         ps = m.get("_revision_number", "?")
         print(f"- {minute(m.get('date'))} PS{ps} {who(m.get('author') or m.get('real_author'))}:")
         print(indent(clip(text, args.max_msg), "    "))
+        for path, cm in sorted(by_message.get(m.get("id"), []),
+                               key=lambda pc: (pc[0] != "/PATCHSET_LEVEL", pc[0], pc[1].get("line", 0))):
+            where = "patchset" if path == "/PATCHSET_LEVEL" else \
+                f"{path}:{cm['line']}" if "line" in cm else path
+            state = "UNRESOLVED" if cm.get("unresolved") else "resolved"
+            print(f"    comment {where} [{state}]" + (" (reply)" if cm.get("in_reply_to") else "") + ":")
+            print(indent(clip(cm.get("message", "").rstrip(), args.max_msg), "      "))
     flush_started()
 
 
@@ -503,6 +518,8 @@ def build_parser():
     s.add_argument("ref", type=change_ref, help="change number, ticket key (MB-123) or Change-Id")
     s.add_argument("-n", type=bounded_int(1, 100), default=50,
                    help="max candidates listed for a ticket key or Change-Id (default 50)")
+    s.add_argument("--no-comments", action="store_true",
+                   help="don't fetch or show review comments under the messages")
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
     s.set_defaults(func=cmd_change)
