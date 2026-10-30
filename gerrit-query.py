@@ -184,17 +184,18 @@ def print_change_list(changes):
         print("(more results available; raise -n)")
 
 
-def resolve_number(g, ref):
+def resolve_number(g, ref, limit):
     """Map a change ref to a single change number, or print candidates and return None."""
     if NUMBER_RE.match(ref):
         return ref
     q = f"change:{ref}" if CHANGE_ID_RE.match(ref) else f"message:{ref}"
-    hits = query_changes(g, q, 50)
+    hits = query_changes(g, q, limit)
     if not hits:
         raise UsageError(f"no changes match {q}")
     if len(hits) == 1:
         return str(hits[0]["_number"])
-    print(f"{len(hits)} changes match {q}; pick a number:")
+    count = f"first {len(hits)}" if hits[-1].get("_more_changes") else str(len(hits))
+    print(f"{count} changes match {q}; pick a number:")
     print_change_list(hits)
     return None
 
@@ -235,7 +236,7 @@ def print_files(files):
 
 
 def cmd_change(g, args):
-    number = resolve_number(g, args.ref)
+    number = resolve_number(g, args.ref, args.n)
     if number is None:
         return
     c = g.get(change_path(number), [("o", o) for o in (
@@ -500,6 +501,8 @@ def build_parser():
 
     s = sub.add_parser("change", help="show a change: metadata, labels, messages, files")
     s.add_argument("ref", type=change_ref, help="change number, ticket key (MB-123) or Change-Id")
+    s.add_argument("-n", type=bounded_int(1, 100), default=50,
+                   help="max candidates listed for a ticket key or Change-Id (default 50)")
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
     s.set_defaults(func=cmd_change)

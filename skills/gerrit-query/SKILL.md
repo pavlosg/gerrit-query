@@ -23,7 +23,7 @@ Run it exactly like this, as a single command:
 
 | Command | What it shows |
 |---|---|
-| `change <number\|TICKET-123\|Change-Id> [--max-msg N]` | Subject, project/branch, status, owner, dates, current patchset, labels with every non-zero vote (Verified = CV, Code-Review, …), full commit message, files, and all change messages. Each message is cut to N chars (default 800, `0` = full); runs of plain CV "Build Started" notices are collapsed into one line. A ticket key or Change-Id that matches several changes (backports, follow-ups, other repos) prints the list. Pick a number from it and run `change <number>`. |
+| `change <number\|TICKET-123\|Change-Id> [-n N] [--max-msg N]` | Subject, project/branch, status, owner, dates, current patchset, labels with every non-zero vote (Verified = CV, Code-Review, …), full commit message, files, and all change messages. Each message is cut to N chars (default 800, `0` = full); runs of plain CV "Build Started" notices are collapsed into one line. A ticket key or Change-Id that matches several changes (backports, follow-ups, other repos) prints the list (up to `-n`, default 50, max 100). Pick a number from it and run `change <number>`. |
 | `comments <number> [--unresolved]` | Inline and patchset-level comments grouped by file, threaded by reply: `PS<n> L<line> [resolved\|UNRESOLVED] author date`. `--unresolved` keeps only threads whose last comment is unresolved. |
 | `query "<gerrit query>" [-n N]` | One line per change: number, status, updated, owner, project/branch, subject. Default 25 results, max 100. |
 | `files <number> [--ps N]` | Changed files with status and +/- for the current or a given patchset. |
