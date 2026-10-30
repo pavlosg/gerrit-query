@@ -338,8 +338,9 @@ def cmd_comments(g, args):
         roots.sort(key=lambda cm: (cm.get("patch_set", 0), cm.get("line", 0), cm.get("updated", "")))
 
         def last_of(cm):
-            kids = children.get(cm["id"])
-            return last_of(kids[-1]) if kids else cm
+            """Newest comment anywhere in the thread; it decides the thread's state."""
+            return max([cm, *(last_of(kid) for kid in children.get(cm["id"], []))],
+                       key=lambda c: c.get("updated", ""))
 
         lines = []
 
