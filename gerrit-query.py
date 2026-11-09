@@ -171,17 +171,48 @@ def emit_json(data):
     print(json.dumps(trim(data), indent=1, ensure_ascii=False))
 
 
-def query_changes(g, q, limit, extra_options=()):
+def query_changes(g, q, limit):
     return g.get("/changes/", [("q", q), ("n", limit), ("o", "DETAILED_ACCOUNTS"),
-                               *[("o", o) for o in extra_options]])
+                               ("o", "DETAILED_LABELS"), ("o", "CURRENT_REVISION")])
 
 
-def print_change_list(changes):
+def current_ps(c):
+    return c.get("revisions", {}).get(c.get("current_revision"), {}).get("_number")
+
+
+def print_change_list(changes, prefix=""):
+    """One line per change: enough to triage without opening each one."""
     for c in changes:
-        print(f"{c['_number']:>7}  {c['status']:<9} {day(c.get('updated'))}  "
-              f"{who(c.get('owner')):<22.22} {c['project']}/{c['branch']}  {c['subject']}")
+        status = c["status"] + ("/WIP" if c.get("work_in_progress") else "")
+        ps = current_ps(c)
+        unresolved = c.get("unresolved_comment_count", 0)
+        topic = f"  topic:{c['topic']}" if c.get("topic") else ""
+        print(f"{prefix}{c['_number']:>7}  {status:<9} {'PS' + str(ps) if ps else '':<5} "
+              f"{short_labels(c):<10} {str(unresolved) + ' unres' if unresolved else '':<8} "
+              f"{day(c.get('updated'))}  {who(c.get('owner')):<18.18} "
+              f"{c['project']}/{c['branch']}  {c['subject']}{topic}")
     if changes and changes[-1].get("_more_changes"):
-        print("(more results available; raise -n)")
+        print(f"{prefix}(more results available; raise -n)")
+
+
+LABEL_ABBREV = {"Verified": "V", "Code-Review": "CR"}
+
+
+def label_score(label):
+    """The deciding vote of a label: the lowest if any is negative, else the highest."""
+    values = [v.get("value", 0) for v in label.get("all", []) if v.get("value")]
+    if not values:
+        return 0
+    return min(values) if min(values) < 0 else max(values)
+
+
+def short_labels(c):
+    parts = []
+    for name, abbrev in LABEL_ABBREV.items():
+        if name in c.get("labels", {}):
+            score = label_score(c["labels"][name])
+            parts.append(f"{abbrev}{score:+d}" if score else f"{abbrev} -")
+    return " ".join(parts)
 
 
 def resolve_number(g, ref, limit):
