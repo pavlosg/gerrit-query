@@ -8,6 +8,7 @@ there is no way to pass a raw URL, an ssh command or a write operation.
 Host: --host <hostname> or the GERRIT_HOST environment variable.
 """
 import argparse
+import http.client
 import json
 import os
 import re
@@ -126,10 +127,63 @@ class Gerrit:
                 body = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                raise NotFound(f"not found: {path}")
+                raise NotFound(self._explain_404(path, dict(params or [])))
             raise UsageError(f"HTTP {e.code} for {path}")
         except urllib.error.URLError as e:
             raise UsageError(f"request failed: {e.reason}")
+        except (OSError, http.client.HTTPException) as e:
+            # Read timeouts, resets and TLS errors are not wrapped in URLError.
+            raise UsageError(f"request failed: {e.__class__.__name__}: {e}")
+        except UnicodeDecodeError:
+            raise UsageError(f"response for {path} is not UTF-8")
+        try:
+            return self._decode(body)
+        except json.JSONDecodeError:
+            raise UsageError(f"response for {path} is not JSON")
+
+    def _exists(self, path):
+        """True on success, False on 404. Any other outcome raises, so that
+        _explain_404 falls back to the plain message rather than guess."""
+        req = urllib.request.Request(f"https://{self.host}{path}", method="GET",
+                                     headers={"Accept": "application/json"})
+        try:
+            with self.opener.open(req, timeout=TIMEOUT):
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            raise
+
+    def _explain_404(self, path, params):
+        """Turn a 404 under /changes/N/... into which of change, patchset or file is missing.
+
+        Gerrit answers 404 for each of these (and for changes the anonymous
+        user can't see), so probe from the top down. Runs only on the error path,
+        and falls back to the plain message if anything goes wrong."""
+        try:
+            return self._probe_404(path, params)
+        except Exception:
+            return f"not found: {path}"
+
+    def _probe_404(self, path, params):
+        m = re.match(r"^/changes/(\d+)(?:/revisions/([^/]+)(?:/files/([^/]+))?)?", path)
+        if not m:
+            return f"not found: {path}"
+        number, rev, file_ = m.groups()
+        if not self._exists(f"/changes/{number}"):
+            return f"change {number} not found (or not visible without logging in)"
+        if rev and rev != "current" and not self._exists(f"/changes/{number}/revisions/{rev}/files"):
+            return f"change {number} has no patchset {rev}"
+        base = params.get("base")
+        if base and not self._exists(f"/changes/{number}/revisions/{base}/files"):
+            return f"change {number} has no patchset {base} (--base)"
+        if file_:
+            where = "the current patchset" if rev == "current" else f"patchset {rev}"
+            return f"file {urllib.parse.unquote(file_)} not found in {where} of change {number}"
+        return f"not found: {path}"
+
+    @staticmethod
+    def _decode(body):
         if body.startswith(XSSI_PREFIX):
             body = body[len(XSSI_PREFIX):]
         return json.loads(body)
@@ -644,6 +698,11 @@ def cmd_diff(g, args):
     for path in paths:
         d = g.get(change_path(args.number, "revisions", rev, "files",
                               urllib.parse.quote(path, safe=""), "diff"), params)
+        # Gerrit answers 200 with no file metadata for a path absent on both sides.
+        if not d.get("meta_a") and not d.get("meta_b"):
+            where = f"patchset {args.ps}" if args.ps else "the current patchset"
+            base = f" or its base patchset {args.base}" if args.base else " or its parent"
+            raise UsageError(f"file {path} not found in {where}{base} of change {args.number}")
         if args.json:
             results[path] = d
             continue
@@ -663,19 +722,9 @@ def cmd_diff(g, args):
 
 def cmd_show(g, args):
     rev = str(args.ps) if args.ps else "current"
-    where = f"patchset {rev}" if args.ps else "the current patchset"
     # With Accept: application/json Gerrit returns the content as a JSON string.
-    try:
-        text = g.get(change_path(args.number, "revisions", rev, "files",
-                                 urllib.parse.quote(args.file, safe=""), "content"))
-    except NotFound:
-        # Tell a missing file apart from a missing change or patchset.
-        try:
-            g.get(change_path(args.number, "revisions", rev, "files"))
-        except NotFound:
-            raise UsageError(f"change {args.number} has no patchset {rev}" if args.ps
-                             else f"change {args.number} not found")
-        raise UsageError(f"file {args.file} not found in {where} of change {args.number}")
+    text = g.get(change_path(args.number, "revisions", rev, "files",
+                             urllib.parse.quote(args.file, safe=""), "content"))
     if not isinstance(text, str):
         raise UsageError(f"unexpected response for {args.file}")
     if "\0" in text:
