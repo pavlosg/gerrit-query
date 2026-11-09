@@ -21,6 +21,14 @@ Add `--json` to any command to get trimmed JSON. Run `./gerrit-query.py <command
 - No subprocess or shell is used. Arguments are checked against strict patterns (change numbers, ticket keys, Change-Ids, file paths, a limited query character set) and URL-encoded.
 - The command set is fixed (`change`, `comments`, `query`, `files`, `diff`, `show`, `related`). There are no write commands, and the script does not accept raw URLs or ssh commands.
 
+## Tests
+
+```
+python3 -m unittest
+```
+
+`test_gerrit_query.py` runs offline. Commands run against a fake Gerrit that serves hand-written responses shaped like the REST API, and the HTTP error handling is tested through a fake opener. Run the tests after any change to the script.
+
 ## Claude Code setup
 
 - Skill: `skills/gerrit-query/SKILL.md`, symlinked to `~/.claude/skills/gerrit-query`.
