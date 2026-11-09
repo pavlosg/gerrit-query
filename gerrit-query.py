@@ -185,8 +185,9 @@ class Gerrit:
         if base and not self._exists(f"/changes/{number}/revisions/{base}/files"):
             return f"change {number} has no patchset {base} (--base)"
         if file_:
-            where = "the current patchset" if rev == "current" else f"patchset {rev}"
-            return f"file {urllib.parse.unquote(file_)} not found in {where} of change {number}"
+            if rev == "current":
+                rev = current_ps_number(self, number) or "current"
+            return f"file {urllib.parse.unquote(file_)} not found in patchset {rev} of change {number}"
         return f"not found: {path}"
 
     @staticmethod
@@ -251,6 +252,15 @@ def query_changes(g, q, limit):
 
 def current_ps(c):
     return c.get("revisions", {}).get(c.get("current_revision"), {}).get("_number")
+
+
+def current_ps_number(g, number):
+    """The change's current patchset number, or None if it can't be fetched.
+    Used only to word error messages, so a failure must not mask the error."""
+    try:
+        return current_ps(g.get(change_path(number), [("o", "CURRENT_REVISION")]))
+    except (NotFound, BadStatus, UsageError):
+        return None
 
 
 def change_line(c, prefix=""):
@@ -776,9 +786,9 @@ def cmd_diff(g, args):
                               urllib.parse.quote(path, safe=""), "diff"), params)
         # Gerrit answers 200 with no file metadata for a path absent on both sides.
         if not d.get("meta_a") and not d.get("meta_b"):
-            where = f"patchset {args.ps}" if args.ps else "the current patchset"
+            ps = args.ps or current_ps_number(g, args.number) or "current"
             base = f" or its base patchset {args.base}" if args.base else " or its parent"
-            raise UsageError(f"file {path} not found in {where}{base} of change {args.number}")
+            raise UsageError(f"file {path} not found in patchset {ps}{base} of change {args.number}")
         if args.json:
             results[path] = d
             continue

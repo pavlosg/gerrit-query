@@ -189,8 +189,11 @@ class RenderDiffTest(unittest.TestCase):
 
     def test_missing_file_is_an_error(self):
         g = FakeGerrit({"/changes/100/revisions/current/files/nope.h/diff":
-                        {"change_type": "MODIFIED", "content": []}})
-        with self.assertRaisesRegex(gq.UsageError, "file nope.h not found in the current patchset"):
+                        {"change_type": "MODIFIED", "content": []},
+                        "/changes/100": {"current_revision": "abc",
+                                         "revisions": {"abc": {"_number": 3}}}})
+        with self.assertRaisesRegex(gq.UsageError,
+                                    "file nope.h not found in patchset 3 or its parent of change 100"):
             run(g, "diff", "100", "nope.h")
 
 
@@ -476,6 +479,12 @@ class NotFoundTest(unittest.TestCase):
     def test_missing_file(self):
         self.assertEqual(self.error(FakeOpener(missing={self.CONTENT})),
                          "file x.h not found in patchset 9 of change 1")
+
+    def test_missing_file_in_current_names_its_patchset(self):
+        path = "/changes/1/revisions/current/files/x.h/content"
+        body = b')]}\'\n{"current_revision": "abc", "revisions": {"abc": {"_number": 3}}}'
+        self.assertEqual(self.error(FakeOpener(missing={path}, body=body), path),
+                         "file x.h not found in patchset 3 of change 1")
 
     def test_failed_probe_falls_back_to_plain_message(self):
         for fail in (TimeoutError("t"), ConnectionResetError(), RuntimeError("boom"),
