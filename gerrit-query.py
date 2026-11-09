@@ -313,28 +313,37 @@ def sibling_changes(g, c):
     return hits
 
 
+def threads_of(lst):
+    """Group one file's comments into threads: root comment id -> its comments."""
+    by_id = {cm["id"]: cm for cm in lst}
+
+    def root_of(cm):
+        seen = set()
+        while cm.get("in_reply_to") in by_id and cm["id"] not in seen:
+            seen.add(cm["id"])
+            cm = by_id[cm["in_reply_to"]]
+        return cm["id"]
+
+    threads = {}
+    for cm in lst:
+        threads.setdefault(root_of(cm), []).append(cm)
+    return threads
+
+
+def newest(comments):
+    return max(comments, key=lambda x: x.get("updated", ""))
+
+
 def thread_states(comments):
     """Map comment id -> True if that comment's thread is unresolved.
 
     A thread's state is the state of its newest comment."""
     states = {}
     for lst in comments.values():
-        by_id = {cm["id"]: cm for cm in lst}
-
-        def root_of(cm):
-            seen = set()
-            while cm.get("in_reply_to") in by_id and cm["id"] not in seen:
-                seen.add(cm["id"])
-                cm = by_id[cm["in_reply_to"]]
-            return cm["id"]
-
-        threads = {}
-        for cm in lst:
-            threads.setdefault(root_of(cm), []).append(cm)
-        for members in threads.values():
-            newest = max(members, key=lambda x: x.get("updated", ""))
+        for members in threads_of(lst).values():
+            unresolved = bool(newest(members).get("unresolved"))
             for cm in members:
-                states[cm["id"]] = bool(newest.get("unresolved"))
+                states[cm["id"]] = unresolved
     return states
 
 
@@ -451,16 +460,13 @@ def branch_tip_note(g, c, sha):
         else f"  [{c['branch']} tip is now {rev[:12]}]"
 
 
-def cmd_change(g, args):
-    number = resolve_number(g, args.ref, args.n)
-    if number is None:
-        return
-    c = g.get(change_path(number), [("o", o) for o in (
-        "DETAILED_ACCOUNTS", "DETAILED_LABELS", "MESSAGES", "CURRENT_REVISION",
-        "CURRENT_FILES", "CURRENT_COMMIT", *(["ALL_REVISIONS"] if args.since_ps else []))])
-    # --since-ps cuts off by when patchset N was uploaded, not by each message's
-    # patchset tag: a reply to an older patchset's comments, posted alongside or
-    # after the new upload, is still tagged with the older patchset.
+def activity_cutoff(c, number, args):
+    """Earliest timestamp to show for --since-ps/--after ("" = show everything).
+
+    --since-ps cuts off by when patchset N was uploaded, not by each item's
+    patchset tag: a reply to an older patchset's comments, posted alongside or
+    after the new upload, is still tagged with the older patchset.
+    c must have been fetched with ALL_REVISIONS when --since-ps is given."""
     cutoff = args.after or ""
     if args.since_ps:
         created = [r.get("created", "") for r in c.get("revisions", {}).values()
@@ -468,6 +474,26 @@ def cmd_change(g, args):
         if not created:
             raise UsageError(f"change {number} has no patchset {args.since_ps}")
         cutoff = max(cutoff, created[0])
+    return cutoff
+
+
+def add_since_args(s, what):
+    s.add_argument("--since-ps", type=bounded_int(1, 9999),
+                   help=f"only show {what} posted since patchset N was uploaded, "
+                        "including late replies on older patchsets")
+    s.add_argument("--after", type=date_arg,
+                   help=f"only show {what} posted at or after this UTC time "
+                        "(YYYY-MM-DD or 'YYYY-MM-DD HH:MM')")
+
+
+def cmd_change(g, args):
+    number = resolve_number(g, args.ref, args.n)
+    if number is None:
+        return
+    c = g.get(change_path(number), [("o", o) for o in (
+        "DETAILED_ACCOUNTS", "DETAILED_LABELS", "MESSAGES", "CURRENT_REVISION",
+        "CURRENT_FILES", "CURRENT_COMMIT", *(["ALL_REVISIONS"] if args.since_ps else []))])
+    cutoff = activity_cutoff(c, number, args)
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
     comments = {} if args.no_comments else get_comments(g, number)
     siblings = sibling_changes(g, c)
@@ -573,15 +599,28 @@ def account_names(obj, names=None):
 
 def cmd_comments(g, args):
     data = get_comments(g, args.number)
+    cutoff = ""
+    if args.since_ps or args.after:
+        c = g.get(change_path(args.number), [("o", "ALL_REVISIONS")]) if args.since_ps else {}
+        cutoff = activity_cutoff(c, args.number, args)
     if args.json:
+        if cutoff:
+            # Keep whole threads that have activity since the cutoff.
+            data = {path: [cm for members in threads_of(lst).values()
+                           if newest(members).get("updated", "") >= cutoff for cm in members]
+                    for path, lst in data.items()}
+            data = {p: lst for p, lst in data.items() if lst}
         return emit_json(data)
     total = sum(len(v) for v in data.values())
     print(f"Change {args.number}: {total} comments in {len(data)} files")
+    if cutoff:
+        print(f"Showing threads with a comment at or after {cutoff[:16]} UTC; "
+              "comments from then on are marked (new).")
 
     def file_key(path):
         return (0 if path == "/PATCHSET_LEVEL" else 1 if path == "/COMMIT_MSG" else 2, path)
 
-    unresolved_threads = 0
+    unresolved_threads = shown = 0
     for path in sorted(data, key=file_key):
         comments = data[path]
         by_id = {cm["id"]: cm for cm in comments}
@@ -614,7 +653,8 @@ def cmd_comments(g, args):
             else:
                 head = f"↳ [{'UNRESOLVED' if cm.get('unresolved') else 'resolved'}] "
             pad = "  " + "    " * depth
-            lines.append(f"{pad}{head}{who(cm.get('author'))} {minute(cm.get('updated'))}:")
+            new = " (new)" if cutoff and cm.get("updated", "") >= cutoff else ""
+            lines.append(f"{pad}{head}{who(cm.get('author'))} {minute(cm.get('updated'))}{new}:")
             if depth == 0:
                 lines.extend(code_lines(cm, pad + "    "))
             lines.append(indent(cm.get("message", "").rstrip(), pad + "    "))
@@ -626,11 +666,17 @@ def cmd_comments(g, args):
             unresolved_threads += unresolved
             if args.unresolved and not unresolved:
                 continue
+            if cutoff and last_of(root).get("updated", "") < cutoff:
+                continue
+            shown += 1
             render(root, 0)
         if lines:
             print("\npatchset-level" if path == "/PATCHSET_LEVEL" else f"\n{path}")
             print("\n".join(lines))
-    print(f"\n{unresolved_threads} unresolved thread(s)")
+    if cutoff and not shown:
+        print("\n(no threads with activity since then)")
+    print(f"\n{unresolved_threads} unresolved thread(s) in the change"
+          + (f"; {shown} shown" if cutoff or args.unresolved else ""))
 
 
 def cmd_files(g, args):
@@ -848,17 +894,13 @@ def build_parser():
                    help="don't fetch or show review comments under the messages")
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
-    s.add_argument("--since-ps", type=bounded_int(1, 9999),
-                   help="only show messages (and their comments) posted since patchset N "
-                        "was uploaded, including late replies on older patchsets")
-    s.add_argument("--after", type=date_arg,
-                   help="only show messages posted at or after this UTC time "
-                        "(YYYY-MM-DD or 'YYYY-MM-DD HH:MM')")
+    add_since_args(s, "messages (and their comments)")
     s.set_defaults(func=cmd_change)
 
     s = sub.add_parser("comments", help="inline comments grouped by file, threaded")
     s.add_argument("number", type=change_number)
     s.add_argument("--unresolved", action="store_true", help="only unresolved threads")
+    add_since_args(s, "threads with a comment")
     s.set_defaults(func=cmd_comments)
 
     s = sub.add_parser("query", help="search changes with a Gerrit query")
