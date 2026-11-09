@@ -188,17 +188,21 @@ def current_ps(c):
     return c.get("revisions", {}).get(c.get("current_revision"), {}).get("_number")
 
 
-def print_change_list(changes, prefix=""):
+def change_line(c, prefix=""):
     """One line per change: enough to triage without opening each one."""
+    status = c["status"] + ("/WIP" if c.get("work_in_progress") else "")
+    ps = current_ps(c)
+    unresolved = c.get("unresolved_comment_count", 0)
+    topic = f"  topic:{c['topic']}" if c.get("topic") else ""
+    return (f"{prefix}{c['_number']:>7}  {status:<9} {'PS' + str(ps) if ps else '':<5} "
+            f"{short_labels(c):<10} {str(unresolved) + ' unresolved':<13} "
+            f"{day(c.get('updated'))}  {who(c.get('owner')):<18.18} "
+            f"{c['project']}/{c['branch']}  {c['subject']}{topic}")
+
+
+def print_change_list(changes, prefix=""):
     for c in changes:
-        status = c["status"] + ("/WIP" if c.get("work_in_progress") else "")
-        ps = current_ps(c)
-        unresolved = c.get("unresolved_comment_count", 0)
-        topic = f"  topic:{c['topic']}" if c.get("topic") else ""
-        print(f"{prefix}{c['_number']:>7}  {status:<9} {'PS' + str(ps) if ps else '':<5} "
-              f"{short_labels(c):<10} {str(unresolved) + ' unres' if unresolved else '':<8} "
-              f"{day(c.get('updated'))}  {who(c.get('owner')):<18.18} "
-              f"{c['project']}/{c['branch']}  {c['subject']}{topic}")
+        print(change_line(c, prefix))
     if changes and changes[-1].get("_more_changes"):
         print(f"{prefix}(more results available; raise -n)")
 
@@ -284,13 +288,16 @@ def get_comments(g, number):
                  [("enable-context", "true"), ("context-padding", "0")])
 
 
-def print_siblings(c, siblings):
+def print_siblings(c, siblings, series=()):
+    """series: change numbers already listed as the series; left out of the topic list."""
     same_id = [x for x in siblings if x["change_id"] == c["change_id"]]
-    same_topic = [x for x in siblings if x["change_id"] != c["change_id"]]
+    same_topic = [x for x in siblings
+                  if x["change_id"] != c["change_id"] and x["_number"] not in series]
     print(f"\nSame Change-Id in any project or branch ({len(same_id)}):")
     print_change_list(same_id, "  ") if same_id else print("  (none)")
     if c.get("topic"):
-        print(f"\nSame topic {c['topic']} ({len(same_topic)}):")
+        outside = " outside the series" if series else ""
+        print(f"\nSame topic {c['topic']}{outside} ({len(same_topic)}):")
         print_change_list(same_topic, "  ") if same_topic else print("  (none)")
 
 
@@ -713,21 +720,24 @@ def cmd_related(g, args):
     if args.json:
         return emit_json({"change": c, "related": series, "siblings": siblings})
     print(f"Change {args.number}: {c['subject']}")
-    print_change_list([c], "  ")
     print(f"\nSeries ({len(series)} related, newest first):")
     if not series:
-        print("  (none)")
+        print("  (none; this change only)")
+        print(change_line(c, " *"))
     for i, r in enumerate(series):
-        mark = "*" if str(r.get("_change_number")) == args.number else " "
+        mark = " *" if str(r.get("_change_number")) == args.number else "  "
         ps = r.get("_revision_number", "?")
         cur = r.get("_current_revision_number", ps)
-        stale = f" (current PS{cur})" if cur != ps else ""
-        subj = r.get("commit", {}).get("subject", "")
-        x = info.get(r.get("_change_number"), {})
-        topic = f"  topic:{x['topic']}" if x.get("topic") else "  (no topic)" if x else ""
-        print(f" {mark}{r.get('_change_number', '?'):>7} PS{ps}{stale} {r.get('status', ''):<8} "
-              f"{short_labels(x):<10} {subj}{topic}{outdated_parent_note(series, i)}")
-    print_siblings(c, siblings)
+        # The list line shows the current patchset; say when the series uses an older one.
+        stale = f"  [series has PS{ps}]" if cur != ps else ""
+        x = info.get(r.get("_change_number"))
+        if x:
+            line = change_line(x, mark) + ("" if x.get("topic") else "  (no topic)")
+        else:
+            line = (f"{mark}{r.get('_change_number', '?'):>7}  {r.get('status', ''):<9} PS{ps}  "
+                    f"{r.get('commit', {}).get('subject', '')}")
+        print(f"{line}{stale}{outdated_parent_note(series, i)}")
+    print_siblings(c, siblings, {x for x in info if x != c["_number"]})
 
 
 # --------------------------------------------------------------------- main
