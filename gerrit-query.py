@@ -215,6 +215,37 @@ def short_labels(c):
     return " ".join(parts)
 
 
+def topic_query(topic):
+    """A topic: query term, or None if the topic can't be quoted safely."""
+    if topic and re.match(r'^[A-Za-z0-9_.:/+\-~@ ]{1,200}$', topic):
+        return f'topic:"{topic}"'
+    return None
+
+
+def sibling_changes(g, c):
+    """Other changes sharing this change's Change-Id (any project or branch) or topic."""
+    terms = [f"change:{c['change_id']}"]
+    tq = topic_query(c.get("topic"))
+    if tq:
+        terms.append(tq)
+    hits = query_changes(g, " OR ".join(terms), 100)
+    more = bool(hits) and hits[-1].get("_more_changes")
+    hits = [x for x in hits if x["_number"] != c["_number"]]
+    if hits and more:
+        hits[-1]["_more_changes"] = True
+    return hits
+
+
+def print_siblings(c, siblings):
+    same_id = [x for x in siblings if x["change_id"] == c["change_id"]]
+    same_topic = [x for x in siblings if x["change_id"] != c["change_id"]]
+    print(f"\nSame Change-Id in any project or branch ({len(same_id)}):")
+    print_change_list(same_id, "  ") if same_id else print("  (none)")
+    if c.get("topic"):
+        print(f"\nSame topic {c['topic']} ({len(same_topic)}):")
+        print_change_list(same_topic, "  ") if same_topic else print("  (none)")
+
+
 def resolve_number(g, ref, limit):
     """Map a change ref to a single change number, or print candidates and return None."""
     if NUMBER_RE.match(ref):
@@ -275,9 +306,11 @@ def cmd_change(g, args):
         "CURRENT_FILES", "CURRENT_COMMIT")])
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
     comments = {} if args.no_comments else g.get(change_path(number, "comments"))
+    siblings = sibling_changes(g, c)
     if args.json:
         if not args.no_comments:
             c["comments"] = comments
+        c["siblings"] = siblings
         return emit_json(c)
     by_message = {}
     for path, lst in comments.items():
@@ -313,6 +346,8 @@ def cmd_change(g, args):
 
     print("\nFiles:")
     print_files(rev.get("files", {}))
+
+    print_siblings(c, siblings)
 
     names = account_names(c)
     print("\nMessages:")
@@ -507,13 +542,18 @@ def cmd_diff(g, args):
 
 def cmd_related(g, args):
     related = g.get(change_path(args.number, "revisions", "current", "related"))
-    c = g.get(change_path(args.number))
-    others = [x for x in query_changes(g, f"change:{c['change_id']}", 50)
-              if str(x["_number"]) != args.number]
-    if args.json:
-        return emit_json({"related": related.get("changes", []), "same_change_id": others})
     series = related.get("changes", [])
+    # The related endpoint has no topics or votes; fetch them (and this change) in one query.
+    numbers = {args.number, *(str(r["_change_number"]) for r in series if r.get("_change_number"))}
+    info = {x["_number"]: x for x in query_changes(g, " OR ".join(f"change:{n}" for n in numbers), 100)}
+    c = info.get(int(args.number))
+    if c is None:
+        raise UsageError(f"change {args.number} not found")
+    siblings = sibling_changes(g, c)
+    if args.json:
+        return emit_json({"change": c, "related": series, "siblings": siblings})
     print(f"Change {args.number}: {c['subject']}")
+    print_change_list([c], "  ")
     print(f"\nSeries ({len(series)} related, newest first):")
     if not series:
         print("  (none)")
@@ -523,11 +563,11 @@ def cmd_related(g, args):
         cur = r.get("_current_revision_number", ps)
         stale = f" (current PS{cur})" if cur != ps else ""
         subj = r.get("commit", {}).get("subject", "")
-        print(f" {mark}{r.get('_change_number', '?'):>7} PS{ps}{stale} {r.get('status', ''):<8} {subj}")
-    print(f"\nSame Change-Id on other branches ({len(others)}):")
-    if not others:
-        print("  (none)")
-    print_change_list(others)
+        x = info.get(r.get("_change_number"), {})
+        topic = f"  topic:{x['topic']}" if x.get("topic") else "  (no topic)" if x else ""
+        print(f" {mark}{r.get('_change_number', '?'):>7} PS{ps}{stale} {r.get('status', ''):<8} "
+              f"{short_labels(x):<10} {subj}{topic}")
+    print_siblings(c, siblings)
 
 
 # --------------------------------------------------------------------- main
@@ -579,7 +619,7 @@ def build_parser():
     s.add_argument("--max-lines", type=bounded_int(1, 1000000), default=2000)
     s.set_defaults(func=cmd_diff)
 
-    s = sub.add_parser("related", help="series (dependency chain) and cherry-picks")
+    s = sub.add_parser("related", help="series, same Change-Id elsewhere, same topic")
     s.add_argument("number", type=change_number)
     s.set_defaults(func=cmd_related)
     return p
