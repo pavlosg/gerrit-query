@@ -377,13 +377,18 @@ def print_siblings(c, siblings, series=(), skip_empty=False):
     same_id = [x for x in siblings if x["change_id"] == c["change_id"]]
     same_topic = [x for x in siblings
                   if x["change_id"] != c["change_id"] and x["_number"] not in series]
-    if same_id or not skip_empty:
-        print(f"\nSame Change-Id in any project or branch ({len(same_id)}):")
-        print_change_list(same_id, "  ") if same_id else print("  (none)")
-    if c.get("topic") and (same_topic or not skip_empty):
+    sections = [("Same Change-Id in any project or branch", same_id)]
+    if c.get("topic"):
         outside = " outside the series" if series else ""
-        print(f"\nSame topic {c['topic']}{outside} ({len(same_topic)}):")
-        print_change_list(same_topic, "  ") if same_topic else print("  (none)")
+        sections.append((f"Same topic {c['topic']}{outside}", same_topic))
+    for title, changes in sections:
+        if not changes and skip_empty:
+            continue
+        print(f"\n{title} ({len(changes)}):")
+        if changes:
+            print_change_list(changes, "  ")
+        else:
+            print("  (none)")
 
 
 def resolve_number(g, ref, limit):
