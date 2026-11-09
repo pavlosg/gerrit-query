@@ -382,6 +382,36 @@ class ShowTest(unittest.TestCase):
         self.assertIn("(lines 9-10 of 10)", out)
         self.assertNotIn("truncated", out)
 
+    def test_numbers_lines_like_gerrit(self):
+        # \f and \u2028 are not line breaks to Gerrit; splitlines() would treat them as such.
+        out = run(FakeGerrit({self.PATH: "a\fb\nc\u2028d\ne\n"}), "show", "100", "f.h")
+        self.assertIn("(lines 1-3 of 3)", out)
+        self.assertIn("    3  e", out)
+
+    def test_no_trailing_newline(self):
+        out = run(FakeGerrit({self.PATH: "a\nb"}), "show", "100", "f.h")
+        self.assertIn("(lines 1-2 of 2)", out)
+
+    def test_empty_file(self):
+        out = run(FakeGerrit({self.PATH: ""}), "show", "100", "f.h")
+        self.assertEqual(out, "Change 100 current patchset: f.h (empty file)\n")
+
+    def test_empty_file_json(self):
+        import json
+        data = json.loads(run(FakeGerrit({self.PATH: ""}), "--json", "show", "100", "f.h"))
+        self.assertEqual((data["lines"], data["total_lines"]), ([], 0))
+
+    def test_crlf(self):
+        g = FakeGerrit({self.PATH: "a\r\nb\r\n"})
+        self.assertEqual(run(g, "show", "100", "f.h").splitlines()[1:], ["    1  a", "    2  b"])
+        import json
+        self.assertEqual(json.loads(run(g, "--json", "show", "100", "f.h"))["lines"], ["a", "b"])
+
+    def test_header_names_patchset(self):
+        path = "/changes/100/revisions/2/files/f.h/content"
+        out = run(FakeGerrit({path: self.TEXT}), "show", "100", "f.h", "--ps", "2")
+        self.assertTrue(out.startswith("Change 100 patchset 2: f.h"))
+
     def test_range_past_end(self):
         with self.assertRaisesRegex(gq.UsageError, "has only 10 lines"):
             run(FakeGerrit({self.PATH: self.TEXT}), "show", "100", "f.h", "--lines", "11-12")

@@ -795,7 +795,19 @@ def cmd_show(g, args):
         raise UsageError(f"unexpected response for {args.file}")
     if "\0" in text:
         raise UsageError(f"{args.file} looks binary; not shown")
-    lines = text.splitlines()
+    # Split on \n only, as Gerrit numbers lines; splitlines() also breaks on
+    # \f, \x1c-\x1e, \x85 and \u2028, which would shift every later number.
+    # A CRLF file keeps its \r on each line after split("\n"); drop it.
+    lines = [line.rstrip("\r") for line in text.split("\n")]
+    if lines[-1] == "":
+        lines.pop()  # the newline ending the last line
+    where = f"patchset {rev}" if args.ps else "current patchset"
+    if not lines and not args.lines:
+        if args.json:
+            return emit_json({"file": args.file, "patchset": rev, "first_line": 1,
+                              "total_lines": 0, "lines": []})
+        print(f"Change {args.number} {where}: {args.file} (empty file)")
+        return
     first, last = args.lines or (1, len(lines))
     if first > len(lines):
         raise UsageError(f"{args.file} has only {len(lines)} lines")
@@ -806,7 +818,7 @@ def cmd_show(g, args):
     if args.json:
         return emit_json({"file": args.file, "patchset": rev, "first_line": first,
                           "total_lines": len(lines), "lines": picked})
-    print(f"Change {args.number} patchset {rev}: {args.file} "
+    print(f"Change {args.number} {where}: {args.file} "
           f"(lines {first}-{last} of {len(lines)})")
     for i, line in enumerate(picked, first):
         print(f"{i:>5}  {line}")
