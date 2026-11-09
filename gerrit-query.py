@@ -522,10 +522,14 @@ def cmd_comments(g, args):
         lines = []
 
         def render(cm, depth):
-            loc = f"L{cm['line']}" if "line" in cm else "file"
-            state = "UNRESOLVED" if cm.get("unresolved") else "resolved"
-            head = f"PS{cm.get('patch_set', '?')} {loc} [{state}] " if depth == 0 \
-                else f"↳ [{state}] "
+            if depth == 0:
+                # The root carries the thread's final state; replies keep their own flag.
+                loc = f" L{cm['line']}" if "line" in cm else \
+                    "" if path == "/PATCHSET_LEVEL" else " file"
+                state = "thread UNRESOLVED" if last_of(cm).get("unresolved") else "thread resolved"
+                head = f"PS{cm.get('patch_set', '?')}{loc} [{state}] "
+            else:
+                head = f"↳ [{'UNRESOLVED' if cm.get('unresolved') else 'resolved'}] "
             pad = "  " + "    " * depth
             lines.append(f"{pad}{head}{who(cm.get('author'))} {minute(cm.get('updated'))}:")
             if depth == 0:
@@ -541,7 +545,7 @@ def cmd_comments(g, args):
                 continue
             render(root, 0)
         if lines:
-            print(f"\n{path}")
+            print("\npatchset-level" if path == "/PATCHSET_LEVEL" else f"\n{path}")
             print("\n".join(lines))
     print(f"\n{unresolved_threads} unresolved thread(s)")
 
