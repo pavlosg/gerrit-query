@@ -39,6 +39,10 @@ class UsageError(Exception):
     pass
 
 
+class NotFound(UsageError):
+    pass
+
+
 # ---------------------------------------------------------------- validation
 
 def _validator(pattern, what):
@@ -122,7 +126,7 @@ class Gerrit:
                 body = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                raise UsageError(f"not found: {path}")
+                raise NotFound(f"not found: {path}")
             raise UsageError(f"HTTP {e.code} for {path}")
         except urllib.error.URLError as e:
             raise UsageError(f"request failed: {e.reason}")
@@ -655,26 +659,40 @@ def cmd_diff(g, args):
 
 def cmd_show(g, args):
     rev = str(args.ps) if args.ps else "current"
+    where = f"patchset {rev}" if args.ps else "the current patchset"
     # With Accept: application/json Gerrit returns the content as a JSON string.
-    text = g.get(change_path(args.number, "revisions", rev, "files",
-                             urllib.parse.quote(args.file, safe=""), "content"))
+    try:
+        text = g.get(change_path(args.number, "revisions", rev, "files",
+                                 urllib.parse.quote(args.file, safe=""), "content"))
+    except NotFound:
+        # Tell a missing file apart from a missing change or patchset.
+        try:
+            g.get(change_path(args.number, "revisions", rev, "files"))
+        except NotFound:
+            raise UsageError(f"change {args.number} has no patchset {rev}" if args.ps
+                             else f"change {args.number} not found")
+        raise UsageError(f"file {args.file} not found in {where} of change {args.number}")
     if not isinstance(text, str):
         raise UsageError(f"unexpected response for {args.file}")
     if "\0" in text:
         raise UsageError(f"{args.file} looks binary; not shown")
     lines = text.splitlines()
     first, last = args.lines or (1, len(lines))
-    last = min(last, len(lines))
+    if first > len(lines):
+        raise UsageError(f"{args.file} has only {len(lines)} lines")
+    wanted = min(last, len(lines))
+    # The header names the lines actually printed, after the --max-lines cap.
+    last = min(wanted, first + args.max_lines - 1)
     picked = lines[first - 1:last]
     if args.json:
         return emit_json({"file": args.file, "patchset": rev, "first_line": first,
-                          "lines": picked})
+                          "total_lines": len(lines), "lines": picked})
     print(f"Change {args.number} patchset {rev}: {args.file} "
           f"(lines {first}-{last} of {len(lines)})")
-    for i, line in enumerate(picked[:args.max_lines], first):
+    for i, line in enumerate(picked, first):
         print(f"{i:>5}  {line}")
-    if len(picked) > args.max_lines:
-        print(f"…[truncated: {len(picked) - args.max_lines} more lines; "
+    if wanted > last:
+        print(f"…[truncated: {wanted - last} more lines; "
               "use --lines A-B or raise --max-lines]")
 
 
