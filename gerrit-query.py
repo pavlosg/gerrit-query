@@ -442,11 +442,16 @@ def parent_note(g, c, sha):
     if c.get("status") != "NEW":
         return ""
     hits = query_changes(g, f"commit:{sha}", 1) if re.match(r"^[0-9a-f]{40}$", sha) else []
-    if hits:
-        h = hits[0]
-        return f"  [change {h['_number']}, {h['status']}]" if h["status"] != "MERGED" \
-            else f"  [merged as change {h['_number']}]" + branch_tip_note(g, c, sha)
-    return branch_tip_note(g, c, sha)
+    if not hits:
+        return branch_tip_note(g, c, sha)
+    h = hits[0]
+    if h["status"] == "MERGED":
+        return f"  [merged as change {h['_number']}]" + branch_tip_note(g, c, sha)
+    # commit: matches any patchset of h, not just its current one.
+    if h.get("current_revision") and h["current_revision"] != sha:
+        return (f"  [older patchset of change {h['_number']}, {h['status']}; "
+                f"current is PS{current_ps(h)}: needs rebase]")
+    return f"  [change {h['_number']}, {h['status']}]"
 
 
 def branch_tip_note(g, c, sha):

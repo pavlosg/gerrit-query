@@ -72,7 +72,7 @@ def change_fixture(status="MERGED", **extra):
             "sha3": {"_number": 3, "created": T3},
             "sha4": {"_number": 4, "created": T4, "ref": "refs/changes/00/100/4",
                      "commit": {"message": "MB-1: Do a thing\n",
-                                "parents": [{"commit": "p" * 40, "subject": "Parent"}]},
+                                "parents": [{"commit": "f" * 40, "subject": "Parent"}]},
                      "files": {}},
         },
         "messages": [
@@ -318,11 +318,22 @@ class ChangeTest(unittest.TestCase):
         self.assertIn("ref: refs/changes/00/100/4", out)
         self.assertNotIn("Same Change-Id", out)  # empty sibling lists are left out
 
+    def test_parent_on_older_patchset_of_open_change(self):
+        parent = {"_number": 99, "status": "NEW", "current_revision": "e" * 40,
+                  "revisions": {"e" * 40: {"_number": 6}}}
+        routes = change_routes(change_fixture(status="NEW"))
+        routes["/changes/"] = lambda p: [parent] if p["q"].startswith("commit:") else []
+        out = run(FakeGerrit(routes), "change", "100")
+        self.assertIn("[older patchset of change 99, NEW; current is PS6: needs rebase]", out)
+        parent["current_revision"] = "f" * 40  # the parent commit is now current
+        out = run(FakeGerrit(routes), "change", "100")
+        self.assertIn("Parent  [change 99, NEW]\n", out)
+
     def test_parent_note_for_open_change(self):
         routes = change_routes(change_fixture(status="NEW"))
         routes["/projects/kv_engine/branches/master"] = {"revision": "t" * 40}
         out = run(FakeGerrit(routes), "change", "100")
-        self.assertIn("parent: pppppppppppp Parent  [master tip is now tttttttttttt]", out)
+        self.assertIn("parent: ffffffffffff Parent  [master tip is now tttttttttttt]", out)
 
 
 # ------------------------------------------------------------------ comments
