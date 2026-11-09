@@ -952,7 +952,7 @@ def build_parser():
                    help="plain unified diff without the old/new line-number columns")
     s.set_defaults(func=cmd_diff)
 
-    s = sub.add_parser("show", aliases=["file"], help="a file's full content at a patchset, with line numbers")
+    s = sub.add_parser("show", help="a file's full content at a patchset, with line numbers")
     s.add_argument("number", type=change_number)
     s.add_argument("file", type=file_path)
     s.add_argument("--ps", type=bounded_int(1, 9999), help="patchset (default current)")

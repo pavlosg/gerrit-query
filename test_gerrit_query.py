@@ -389,7 +389,7 @@ class ShowTest(unittest.TestCase):
         self.assertIn("truncated: 7 more lines", out)
 
     def test_range_clamped_to_file(self):
-        out = run(FakeGerrit({self.PATH: self.TEXT}), "file", "100", "f.h", "--lines", "9-20")
+        out = run(FakeGerrit({self.PATH: self.TEXT}), "show", "100", "f.h", "--lines", "9-20")
         self.assertIn("(lines 9-10 of 10)", out)
         self.assertNotIn("truncated", out)
 
