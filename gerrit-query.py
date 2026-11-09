@@ -44,6 +44,13 @@ class NotFound(UsageError):
     pass
 
 
+class BadStatus(UsageError):
+    """An HTTP error status other than 404."""
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+
+
 # ---------------------------------------------------------------- validation
 
 def _validator(pattern, what):
@@ -128,7 +135,7 @@ class Gerrit:
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 raise NotFound(self._explain_404(path, dict(params or [])))
-            raise UsageError(f"HTTP {e.code} for {path}")
+            raise BadStatus(f"HTTP {e.code} for {path}", e.code)
         except urllib.error.URLError as e:
             raise UsageError(f"request failed: {e.reason}")
         except (OSError, http.client.HTTPException) as e:
@@ -342,8 +349,15 @@ def code_lines(cm, prefix, limit=6):
 
 
 def get_comments(g, number):
-    return g.get(change_path(number, "comments"),
-                 [("enable-context", "true"), ("context-padding", "0")])
+    """Comments with the code lines they're attached to, where the server supports it."""
+    try:
+        return g.get(change_path(number, "comments"),
+                     [("enable-context", "true"), ("context-padding", "0")])
+    except BadStatus as e:
+        # Older Gerrit rejects the unknown option with 400; retry without the context.
+        if e.code != 400:
+            raise
+        return g.get(change_path(number, "comments"))
 
 
 def print_siblings(c, siblings, series=(), skip_empty=False):
