@@ -77,6 +77,14 @@ def host_name(value):
     return value
 
 
+def date_arg(value):
+    """YYYY-MM-DD or YYYY-MM-DD HH:MM, compared as a prefix of Gerrit's UTC timestamps."""
+    if not re.match(r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?$", value):
+        raise argparse.ArgumentTypeError(
+            f"invalid date {value!r}: expected YYYY-MM-DD or 'YYYY-MM-DD HH:MM'")
+    return value.replace("T", " ")
+
+
 def bounded_int(lo, hi):
     def check(value):
         if not re.match(r"^\d{1,6}$", value) or not lo <= int(value) <= hi:
@@ -350,7 +358,12 @@ def cmd_change(g, args):
     print_siblings(c, siblings)
 
     names = account_names(c)
-    print("\nMessages:")
+    messages = c.get("messages", [])
+    shown = [m for m in messages
+             if m.get("_revision_number", 0) >= (args.since_ps or 0)
+             and (not args.after or m.get("date", "") >= args.after)]
+    hidden = len(messages) - len(shown)
+    print("\nMessages:" + (f" ({hidden} earlier hidden by --since-ps/--after)" if hidden else ""))
     started = []
 
     def flush_started():
@@ -359,7 +372,7 @@ def cmd_change(g, args):
                   f"{who(started[0].get('author'))}: Build Started x{len(started)}")
             started.clear()
 
-    for m in c.get("messages", []):
+    for m in shown:
         text = ACCOUNT_PLACEHOLDER_RE.sub(lambda x: names.get(x.group(1), x.group(0)),
                                           m.get("message", ""))
         if BUILD_STARTED_RE.match(text):
@@ -652,6 +665,11 @@ def build_parser():
                    help="don't fetch or show review comments under the messages")
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
+    s.add_argument("--since-ps", type=bounded_int(1, 9999),
+                   help="only show messages (and their comments) from patchset N onwards")
+    s.add_argument("--after", type=date_arg,
+                   help="only show messages posted at or after this UTC time "
+                        "(YYYY-MM-DD or 'YYYY-MM-DD HH:MM')")
     s.set_defaults(func=cmd_change)
 
     s = sub.add_parser("comments", help="inline comments grouped by file, threaded")
