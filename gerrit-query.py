@@ -244,6 +244,46 @@ def sibling_changes(g, c):
     return hits
 
 
+def thread_states(comments):
+    """Map comment id -> True if that comment's thread is unresolved.
+
+    A thread's state is the state of its newest comment."""
+    states = {}
+    for lst in comments.values():
+        by_id = {cm["id"]: cm for cm in lst}
+
+        def root_of(cm):
+            seen = set()
+            while cm.get("in_reply_to") in by_id and cm["id"] not in seen:
+                seen.add(cm["id"])
+                cm = by_id[cm["in_reply_to"]]
+            return cm["id"]
+
+        threads = {}
+        for cm in lst:
+            threads.setdefault(root_of(cm), []).append(cm)
+        for members in threads.values():
+            newest = max(members, key=lambda x: x.get("updated", ""))
+            for cm in members:
+                states[cm["id"]] = bool(newest.get("unresolved"))
+    return states
+
+
+def code_lines(cm, prefix, limit=6):
+    """The source lines a comment is attached to (from enable-context)."""
+    ctx = cm.get("context_lines") or []
+    out = [f"{prefix}| {x.get('line_number', '?'):>5}  {x.get('context_line', '')}"
+           for x in ctx[:limit]]
+    if len(ctx) > limit:
+        out.append(f"{prefix}| …[+{len(ctx) - limit} lines]")
+    return out
+
+
+def get_comments(g, number):
+    return g.get(change_path(number, "comments"),
+                 [("enable-context", "true"), ("context-padding", "0")])
+
+
 def print_siblings(c, siblings):
     same_id = [x for x in siblings if x["change_id"] == c["change_id"]]
     same_topic = [x for x in siblings if x["change_id"] != c["change_id"]]
@@ -313,13 +353,14 @@ def cmd_change(g, args):
         "DETAILED_ACCOUNTS", "DETAILED_LABELS", "MESSAGES", "CURRENT_REVISION",
         "CURRENT_FILES", "CURRENT_COMMIT")])
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
-    comments = {} if args.no_comments else g.get(change_path(number, "comments"))
+    comments = {} if args.no_comments else get_comments(g, number)
     siblings = sibling_changes(g, c)
     if args.json:
         if not args.no_comments:
             c["comments"] = comments
         c["siblings"] = siblings
         return emit_json(c)
+    states = thread_states(comments)
     by_message = {}
     for path, lst in comments.items():
         for cm in lst:
@@ -386,8 +427,13 @@ def cmd_change(g, args):
                                key=lambda pc: (pc[0] != "/PATCHSET_LEVEL", pc[0], pc[1].get("line", 0))):
             where = "patchset" if path == "/PATCHSET_LEVEL" else \
                 f"{path}:{cm['line']}" if "line" in cm else path
-            state = "UNRESOLVED" if cm.get("unresolved") else "resolved"
-            print(f"    comment {where} [{state}]" + (" (reply)" if cm.get("in_reply_to") else "") + ":")
+            state = "thread UNRESOLVED" if states.get(cm["id"]) else "thread resolved"
+            ps = f"PS{cm['patch_set']} " if cm.get("patch_set") else ""
+            print(f"    comment {ps}{where} [{state}]"
+                  + (" (reply)" if cm.get("in_reply_to") else "") + ":")
+            if not cm.get("in_reply_to"):
+                for line in code_lines(cm, "      "):
+                    print(line)
             print(indent(clip(cm.get("message", "").rstrip(), args.max_msg), "      "))
     flush_started()
 
@@ -407,7 +453,7 @@ def account_names(obj, names=None):
 
 
 def cmd_comments(g, args):
-    data = g.get(change_path(args.number, "comments"))
+    data = get_comments(g, args.number)
     if args.json:
         return emit_json(data)
     total = sum(len(v) for v in data.values())
@@ -446,6 +492,8 @@ def cmd_comments(g, args):
                 else f"↳ [{state}] "
             pad = "  " + "    " * depth
             lines.append(f"{pad}{head}{who(cm.get('author'))} {minute(cm.get('updated'))}:")
+            if depth == 0:
+                lines.extend(code_lines(cm, pad + "    "))
             lines.append(indent(cm.get("message", "").rstrip(), pad + "    "))
             for kid in children.get(cm["id"], []):
                 render(kid, depth + 1)
