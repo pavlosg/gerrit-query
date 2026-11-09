@@ -494,10 +494,18 @@ def cmd_change(g, args):
         "DETAILED_ACCOUNTS", "DETAILED_LABELS", "MESSAGES", "CURRENT_REVISION",
         "CURRENT_FILES", "CURRENT_COMMIT", *(["ALL_REVISIONS"] if args.since_ps else []))])
     cutoff = activity_cutoff(c, number, args)
+    messages = c.get("messages", [])
+    shown = [m for m in messages if m.get("date", "") >= cutoff]
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
     comments = {} if args.no_comments else get_comments(g, number)
     siblings = sibling_changes(g, c)
     if args.json:
+        if cutoff:
+            # Same filter as the text output: the shown messages and their comments.
+            c["messages"] = shown
+            ids = {m.get("id") for m in shown}
+            comments = {path: kept for path, lst in comments.items()
+                        if (kept := [cm for cm in lst if cm.get("change_message_id") in ids])}
         if not args.no_comments:
             c["comments"] = comments
         c["siblings"] = siblings
@@ -546,8 +554,6 @@ def cmd_change(g, args):
     print_siblings(c, siblings, skip_empty=True)
 
     names = account_names(c)
-    messages = c.get("messages", [])
-    shown = [m for m in messages if m.get("date", "") >= cutoff]
     hidden = len(messages) - len(shown)
     print("\nMessages:" + (f" ({hidden} earlier hidden by --since-ps/--after)" if hidden else ""))
     started = []

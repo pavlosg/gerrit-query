@@ -289,6 +289,15 @@ class ChangeTest(unittest.TestCase):
         self.assertNotIn("Is this needed?", out)  # m1: before PS4
         self.assertIn("1 earlier hidden", out)
 
+    def test_json_applies_the_same_filter(self):
+        import json
+        data = json.loads(run(FakeGerrit(change_routes()), "--json", "change", "100",
+                              "--since-ps", "4"))
+        self.assertEqual([m["id"] for m in data["messages"]], ["m2", "b1", "b2", "m3"])
+        self.assertEqual([cm["id"] for cm in data["comments"]["src/a.cc"]], ["c2"])
+        unfiltered = json.loads(run(FakeGerrit(change_routes()), "--json", "change", "100"))
+        self.assertEqual(len(unfiltered["messages"]), 5)
+
     def test_activity_cutoff(self):
         c = change_fixture()
         ns = lambda **kw: type("A", (), {"since_ps": None, "after": None, **kw})
