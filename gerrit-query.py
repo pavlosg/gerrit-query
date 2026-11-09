@@ -545,6 +545,38 @@ def cmd_diff(g, args):
         print("\n".join(out).rstrip())
 
 
+def cmd_show(g, args):
+    rev = str(args.ps) if args.ps else "current"
+    # With Accept: application/json Gerrit returns the content as a JSON string.
+    text = g.get(change_path(args.number, "revisions", rev, "files",
+                             urllib.parse.quote(args.file, safe=""), "content"))
+    if not isinstance(text, str):
+        raise UsageError(f"unexpected response for {args.file}")
+    if "\0" in text:
+        raise UsageError(f"{args.file} looks binary; not shown")
+    lines = text.splitlines()
+    first, last = args.lines or (1, len(lines))
+    last = min(last, len(lines))
+    picked = lines[first - 1:last]
+    if args.json:
+        return emit_json({"file": args.file, "patchset": rev, "first_line": first,
+                          "lines": picked})
+    print(f"Change {args.number} patchset {rev}: {args.file} "
+          f"(lines {first}-{last} of {len(lines)})")
+    for i, line in enumerate(picked[:args.max_lines], first):
+        print(f"{i:>5}  {line}")
+    if len(picked) > args.max_lines:
+        print(f"…[truncated: {len(picked) - args.max_lines} more lines; "
+              "use --lines A-B or raise --max-lines]")
+
+
+def line_range(value):
+    m = re.match(r"^(\d{1,7})-(\d{1,7})$", value)
+    if not m or not 1 <= int(m.group(1)) <= int(m.group(2)):
+        raise argparse.ArgumentTypeError(f"expected a line range like 40-80, got {value!r}")
+    return int(m.group(1)), int(m.group(2))
+
+
 def outdated_parent_note(series, i):
     """Flag a series entry that isn't built on its parent change's current patchset.
 
@@ -647,6 +679,14 @@ def build_parser():
     s.add_argument("--no-line-numbers", action="store_true",
                    help="plain unified diff without the old/new line-number columns")
     s.set_defaults(func=cmd_diff)
+
+    s = sub.add_parser("show", aliases=["file"], help="a file's full content at a patchset, with line numbers")
+    s.add_argument("number", type=change_number)
+    s.add_argument("file", type=file_path)
+    s.add_argument("--ps", type=bounded_int(1, 9999), help="patchset (default current)")
+    s.add_argument("--lines", type=line_range, help="only lines A-B, e.g. 40-80")
+    s.add_argument("--max-lines", type=bounded_int(1, 1000000), default=2000)
+    s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("related", help="series, same Change-Id elsewhere, same topic")
     s.add_argument("number", type=change_number)

@@ -9,6 +9,7 @@ export GERRIT_HOST=review.couchbase.org      # or pass --host <hostname>
 ./gerrit-query.py comments 255786 --unresolved
 ./gerrit-query.py files 257202 --ps 1
 ./gerrit-query.py diff 257202 engines/ep/src/checkpoint_manager.cc
+./gerrit-query.py show 257202 engines/ep/src/checkpoint_manager.cc --ps 1 --lines 100-160
 ./gerrit-query.py related 256816
 ```
 
@@ -18,7 +19,7 @@ Add `--json` to any command to get trimmed JSON. Run `./gerrit-query.py <command
 
 - Only HTTPS `GET` requests, and only to the configured host. Redirects to other hosts are refused.
 - No subprocess or shell is used. Arguments are checked against strict patterns (change numbers, ticket keys, Change-Ids, file paths, a limited query character set) and URL-encoded.
-- The command set is fixed (`change`, `comments`, `query`, `files`, `diff`, `related`). There are no write commands, and the script does not accept raw URLs or ssh commands.
+- The command set is fixed (`change`, `comments`, `query`, `files`, `diff`, `show`, `related`). There are no write commands, and the script does not accept raw URLs or ssh commands.
 
 ## Claude Code setup
 
