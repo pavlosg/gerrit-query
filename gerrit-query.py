@@ -458,7 +458,7 @@ def cmd_files(g, args):
     print_files(files)
 
 
-def render_diff(d, context, path):
+def render_diff(d, context, path, numbers=True):
     out = list(d.get("diff_header", [])) or [f"--- a/{path}", f"+++ b/{path}"]
     if d.get("binary"):
         out.append("(binary file, not shown)")
@@ -498,7 +498,12 @@ def render_diff(d, context, path):
         if i in keep:
             if hunk is None:
                 hunk = [a_no, b_no, 0, 0, []]
-            hunk[4].append(tag + text)
+            if numbers:
+                old = str(a_no) if tag in " -" else ""
+                new = str(b_no) if tag in " +" else ""
+                hunk[4].append(f"{old:>5} {new:>5} {tag}{text}")
+            else:
+                hunk[4].append(tag + text)
             hunk[2] += tag in " -"
             hunk[3] += tag in " +"
         elif hunk is not None:
@@ -526,7 +531,7 @@ def cmd_diff(g, args):
         if args.json:
             results[path] = d
             continue
-        out.extend(render_diff(d, args.context, path))
+        out.extend(render_diff(d, args.context, path, not args.no_line_numbers))
         out.append("")
     if args.json:
         return emit_json(results)
@@ -639,6 +644,8 @@ def build_parser():
     s.add_argument("--base", type=bounded_int(1, 9999), help="diff against this patchset")
     s.add_argument("--context", type=bounded_int(0, 1000), default=3)
     s.add_argument("--max-lines", type=bounded_int(1, 1000000), default=2000)
+    s.add_argument("--no-line-numbers", action="store_true",
+                   help="plain unified diff without the old/new line-number columns")
     s.set_defaults(func=cmd_diff)
 
     s = sub.add_parser("related", help="series, same Change-Id elsewhere, same topic")
