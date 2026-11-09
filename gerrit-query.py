@@ -374,7 +374,17 @@ def cmd_change(g, args):
         return
     c = g.get(change_path(number), [("o", o) for o in (
         "DETAILED_ACCOUNTS", "DETAILED_LABELS", "MESSAGES", "CURRENT_REVISION",
-        "CURRENT_FILES", "CURRENT_COMMIT")])
+        "CURRENT_FILES", "CURRENT_COMMIT", *(["ALL_REVISIONS"] if args.since_ps else []))])
+    # --since-ps cuts off by when patchset N was uploaded, not by each message's
+    # patchset tag: a reply to an older patchset's comments, posted alongside or
+    # after the new upload, is still tagged with the older patchset.
+    cutoff = args.after or ""
+    if args.since_ps:
+        created = [r.get("created", "") for r in c.get("revisions", {}).values()
+                   if r.get("_number") == args.since_ps]
+        if not created:
+            raise UsageError(f"change {number} has no patchset {args.since_ps}")
+        cutoff = max(cutoff, created[0])
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
     comments = {} if args.no_comments else get_comments(g, number)
     siblings = sibling_changes(g, c)
@@ -428,9 +438,7 @@ def cmd_change(g, args):
 
     names = account_names(c)
     messages = c.get("messages", [])
-    shown = [m for m in messages
-             if m.get("_revision_number", 0) >= (args.since_ps or 0)
-             and (not args.after or m.get("date", "") >= args.after)]
+    shown = [m for m in messages if m.get("date", "") >= cutoff]
     hidden = len(messages) - len(shown)
     print("\nMessages:" + (f" ({hidden} earlier hidden by --since-ps/--after)" if hidden else ""))
     started = []
@@ -742,7 +750,8 @@ def build_parser():
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
     s.add_argument("--since-ps", type=bounded_int(1, 9999),
-                   help="only show messages (and their comments) from patchset N onwards")
+                   help="only show messages (and their comments) posted since patchset N "
+                        "was uploaded, including late replies on older patchsets")
     s.add_argument("--after", type=date_arg,
                    help="only show messages posted at or after this UTC time "
                         "(YYYY-MM-DD or 'YYYY-MM-DD HH:MM')")
