@@ -345,6 +345,29 @@ def print_files(files):
               f"-{info.get('lines_deleted', 0)}{bin_}")
 
 
+def parent_note(g, c, sha):
+    """Say whether a parent commit is the branch tip, another open change, or older."""
+    if c.get("status") != "NEW":
+        return ""
+    hits = query_changes(g, f"commit:{sha}", 1) if re.match(r"^[0-9a-f]{40}$", sha) else []
+    if hits:
+        h = hits[0]
+        return f"  [change {h['_number']}, {h['status']}]" if h["status"] != "MERGED" \
+            else f"  [merged as change {h['_number']}]" + branch_tip_note(g, c, sha)
+    return branch_tip_note(g, c, sha)
+
+
+def branch_tip_note(g, c, sha):
+    try:
+        tip = g.get("/projects/" + urllib.parse.quote(c["project"], safe="")
+                    + "/branches/" + urllib.parse.quote(c["branch"], safe=""))
+    except UsageError:
+        return ""
+    rev = tip.get("revision", "")
+    return "  [tip of " + c["branch"] + "]" if rev == sha \
+        else f"  [{c['branch']} tip is now {rev[:12]}]"
+
+
 def cmd_change(g, args):
     number = resolve_number(g, args.ref, args.n)
     if number is None:
@@ -381,6 +404,11 @@ def cmd_change(g, args):
     print(f"  Change-Id: {c.get('change_id')}")
     if c.get("topic"):
         print(f"  topic: {c['topic']}")
+    if rev.get("ref"):
+        print(f"  ref: {rev['ref']}")
+    for parent in rev.get("commit", {}).get("parents", []):
+        sha = parent.get("commit", "")
+        print(f"  parent: {sha[:12]} {parent.get('subject', '')}{parent_note(g, c, sha)}")
 
     print("\nLabels:")
     for name, label in sorted(c.get("labels", {}).items()):
