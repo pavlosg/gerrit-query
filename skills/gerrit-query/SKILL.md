@@ -5,7 +5,7 @@ description: Read Gerrit code review data (e.g. Couchbase's review.couchbase.org
 
 # gerrit-query
 
-`~/Documents/GitHub/gerrit-query/gerrit-query.py` is a read-only Gerrit client. It sends only anonymous HTTPS GET requests, accepts no URLs or write verbs, and does its own JSON trimming.
+`~/Documents/GitHub/gerrit-query/gerrit-query.py` is a read-only, anonymous Gerrit client. It cannot review, vote, submit, abandon, rebase, set reviewers or post comments. For those, send the user to the Gerrit web UI.
 
 ## How to invoke
 
@@ -15,21 +15,33 @@ Run it exactly like this, as a single command:
 ~/Documents/GitHub/gerrit-query/gerrit-query.py <command> [args]
 ```
 
-- Do not prefix it with `python3`, `cd` into the repo, pipe its output, or chain it with `&&`/`;`. The permission rule matches only the plain form, so anything else triggers a prompt. The script already trims its output, so there is nothing to post-process.
-- The host comes from `GERRIT_HOST` (set to `review.couchbase.org` in the Claude settings). For another Gerrit server, pass `--host <hostname>`: a bare hostname, never a URL.
-- `--json` (before or after the command) prints trimmed JSON in place of text. Use it only when you need fields the text output doesn't show.
+- Do not prefix it with `python3`, `cd` into the repo, pipe its output, or chain it with `&&`/`;`. The permission rule matches only the plain form. The output is already trimmed.
+- The host comes from `GERRIT_HOST` (`review.couchbase.org`). For another server, pass `--host <hostname>`: a bare hostname, never a URL.
+- `--json` prints trimmed JSON. Use it only for fields the text output doesn't show.
 
 ## Commands
 
-| Command | What it shows |
+| Command | Use it for |
 |---|---|
-| `change <number\|TICKET-123\|Change-Id> [-n N] [--max-msg N] [--no-comments] [--since-ps N] [--after DATE]` | Subject, project/branch, status, owner, dates, current patchset, its ref (`refs/changes/…`) and parent commit. For an open change the parent is tagged `[change N, NEW]` (it sits on another open change), `[tip of <branch>]`, or `[<branch> tip is now <sha>]` (behind the branch, which is not a problem by itself). Labels with every non-zero vote (Verified = CV, Code-Review, …), full commit message, files, then other changes with the same Change-Id in any project or branch (cross-repo pieces, cherry-picks, backports) and other changes with the same topic (each list is left out when empty; `related` always prints both), and all change messages. A cross-repo series is tied together by a shared Change-Id or a shared topic, so check both lists. Each review comment (inline and patchset-level) is printed under the message it was posted with, as `comment PS<n> file:line [thread resolved|thread UNRESOLVED]`. The state is the whole thread's final state (from its newest comment), not that comment's own flag. The first comment of a thread is followed by the code line(s) it is attached to, as `| <line>  <code>`. Lines starting with `>` inside a comment are the author quoting earlier text; `--no-comments` leaves them out. Messages and comments are each cut to N chars (default 800, `0` = full); runs of plain CV "Build Started" notices are collapsed into one line. To see only what's new, `--since-ps N` keeps messages (and their comments) posted since patchset N was uploaded, including replies to older patchsets' comments posted after it, and `--after "YYYY-MM-DD[ HH:MM]"` (UTC) keeps those posted at or after that time; the header and labels are always shown. A ticket key or Change-Id that matches several changes (backports, follow-ups, other repos) prints the list (up to `-n`, default 50, max 100). Pick a number from it and run `change <number>`. |
-| `comments <number> [--unresolved] [--since-ps N] [--after DATE]` | Inline and patchset-level comments grouped by file, threaded by reply. A thread's first comment reads `PS<n> L<line> [thread resolved\|thread UNRESOLVED] author date`, the thread's final state as in `change`; replies (`↳`) show their own flag. Patchset-level comments are grouped under `patchset-level`. Each thread shows the commented code line(s) (`| <line>  <code>`) under its first comment, on servers that support it (older ones just omit them). `--unresolved` keeps only threads whose last comment is unresolved. `--since-ps N` / `--after DATE` (same meaning as in `change`) keep only threads with a comment since then; such threads are shown whole, with the new comments marked `(new)`. |
-| `query "<gerrit query>" [-n N]` | One line per change: number, status (`NEW/WIP` for work in progress), current patchset, `V`/`CR` score (lowest vote if any is negative, else highest; `-` = no votes), unresolved-comment count (`3 unresolved`, `0 unresolved` when none), updated, owner, project/branch, subject, topic. The same line format is used wherever changes are listed (ticket/Change-Id matches in `change`, sibling lists, `related` series). Default 25 results, max 100. |
-| `files <number> [--ps N]` | Changed files with status and +/- for the current or a given patchset. |
-| `diff <number> [file] [--ps N] [--base M] [--context C] [--max-lines L] [--no-line-numbers]` | Unified diff of the whole change or one file. Each line starts with its old and new line numbers (blank on the side it doesn't exist), so `file:line` from a comment, and the line for an inline comment you draft, is the second column. `--no-line-numbers` gives a plain patch. `--base M` diffs patchset M against `--ps` (or current). Output is capped at 2000 lines by default, so pass a file to narrow it. |
-| `show <number> <file> [--ps N] [--lines A-B] [--max-lines L]` (alias `file`) | The whole file as it is at that patchset (default current), with line numbers. Use this, not `diff --context` or a `git fetch` of the change ref, to read a file in full. Capped at 2000 lines by default; `--lines 40-80` picks a range. |
-| `related <number>` | The series (dependency chain, newest first), one list line per change with `*` marking this one. With no series, this change's own line is still printed, so its current patchset is always shown. `[series has PS5]` means the chain uses an older patchset of that change than the current one shown in the line. `[on … of N, current is PSm: needs rebase]` marks an entry not built on its parent's current patchset. Then the same Change-Id list as `change`, and the same-topic changes that are not already in the series. |
+| `change <number\|TICKET-123\|Change-Id> [-n N] [--max-msg N] [--no-comments] [--since-ps N] [--after DATE]` | Everything about one change: header, parent, votes, commit message, files, sibling changes, and messages with their review comments. A ticket or Change-Id with several matches prints a list to pick from. |
+| `comments <number> [--unresolved] [--since-ps N] [--after DATE]` | Review comments threaded by file, with the code each thread is on. |
+| `query "<gerrit query>" [-n N]` | One line per matching change (default 25, max 100). |
+| `files <number> [--ps N]` | Changed files with +/- counts. |
+| `diff <number> [file] [--ps N] [--base M] [--context C] [--max-lines L] [--no-line-numbers]` | Unified diff. `--base M` diffs patchset M against `--ps` (or current). |
+| `show <number> <file> [--ps N] [--lines A-B] [--max-lines L]` | A whole file at a patchset. Use this, not `diff --context` or a `git fetch`, to read a file in full. |
+| `related <number>` | The series (newest first, `*` = this change), then same Change-Id and same-topic changes. |
+
+## Flags and output that aren't self-explanatory
+
+- `--since-ps N` keeps what was posted after patchset N was uploaded, including late replies to older patchsets' comments. `--after "YYYY-MM-DD[ HH:MM]"` is UTC. In `comments`, matching threads are shown whole with new comments marked `(new)`.
+- `--max-msg N` cuts messages and comments to N characters (default 800, `0` = full). `--no-comments` also drops `>` lines, where the author quotes earlier text.
+- `[thread resolved|UNRESOLVED]` on a thread's first comment is the whole thread's final state, not that comment's own flag.
+- In list lines, `V`/`CR` is the lowest vote if any is negative, otherwise the highest. `-` means no votes.
+- Parent tags in `change`: `[change N, NEW]` means it is stacked on another open change. `[<branch> tip is now <sha>]` only means it is behind the branch, which is not a problem by itself.
+- In `related`, `[series has PS5]` means the chain uses an older patchset than the current one. `[on … of N, current is PSm: needs rebase]` means that entry needs a rebase.
+- A cross-repo series is tied together by a shared Change-Id or a shared topic, so check both lists.
+- In `diff`, the second number column is the new line number. That is the one a comment's `file:line` refers to, and the one to use when drafting an inline comment.
+- CV results: the `Verified` label and Build Bot messages. Failed jobs appear as `<jenkins url> : FAILURE`. Runs of plain "Build Started" messages are collapsed into one line (`Build Started xN`).
 
 Query strings may contain only letters, digits, spaces and `_.:/+-~"(),=<>@*`. Common operators: `project:kv_engine`, `status:open|merged|abandoned`, `branch:master`, `owner:"Name"`, `reviewer:`, `message:MB-12345`, `topic:`, `file:`, `-is:wip`, `after:2026-01-01`, `label:Verified=-1`, `has:unresolved`.
 
@@ -38,14 +50,5 @@ Query strings may contain only letters, digits, spaces and `_.:/+-~"(),=<>@*`. C
 ```
 ~/Documents/GitHub/gerrit-query/gerrit-query.py query "project:kv_engine status:open label:Verified=-1" -n 10
 ~/Documents/GitHub/gerrit-query/gerrit-query.py change MB-69574
-~/Documents/GitHub/gerrit-query/gerrit-query.py change 257202 --max-msg 0
-~/Documents/GitHub/gerrit-query/gerrit-query.py comments 255786 --unresolved
-~/Documents/GitHub/gerrit-query/gerrit-query.py diff 257202 engines/ep/src/checkpoint_manager.cc
-~/Documents/GitHub/gerrit-query/gerrit-query.py related 256816
+~/Documents/GitHub/gerrit-query/gerrit-query.py comments 255786 --unresolved --since-ps 3
 ```
-
-CV results: in `change`, look at the `Verified` label and the Build Bot messages. Failed jobs appear as `<jenkins url> : FAILURE`.
-
-## Read-only
-
-The tool cannot review, vote, submit, abandon, rebase, set reviewers or post comments, and it has no credentials. If the user wants one of those actions, tell them to do it in the Gerrit web UI.
