@@ -540,6 +540,28 @@ def cmd_diff(g, args):
         print("\n".join(out).rstrip())
 
 
+def outdated_parent_note(series, i):
+    """Flag a series entry that isn't built on its parent change's current patchset.
+
+    series is newest first, so an entry's parent change is the next entry."""
+    if i + 1 >= len(series):
+        return ""
+    parent = series[i + 1]
+    if not parent.get("_change_number"):
+        return ""
+    parents = [p.get("commit") for p in series[i].get("commit", {}).get("parents", [])]
+    listed = parent.get("commit", {}).get("commit")
+    if listed in parents:
+        # Built on the listed patchset; is that the parent's current one?
+        if parent.get("_revision_number") == parent.get("_current_revision_number"):
+            return ""
+        on = f"PS{parent.get('_revision_number')}"
+    else:
+        on = "an older patchset"
+    return (f"  [on {on} of {parent['_change_number']}, current is "
+            f"PS{parent.get('_current_revision_number')}: needs rebase]")
+
+
 def cmd_related(g, args):
     related = g.get(change_path(args.number, "revisions", "current", "related"))
     series = related.get("changes", [])
@@ -557,7 +579,7 @@ def cmd_related(g, args):
     print(f"\nSeries ({len(series)} related, newest first):")
     if not series:
         print("  (none)")
-    for r in series:
+    for i, r in enumerate(series):
         mark = "*" if str(r.get("_change_number")) == args.number else " "
         ps = r.get("_revision_number", "?")
         cur = r.get("_current_revision_number", ps)
@@ -566,7 +588,7 @@ def cmd_related(g, args):
         x = info.get(r.get("_change_number"), {})
         topic = f"  topic:{x['topic']}" if x.get("topic") else "  (no topic)" if x else ""
         print(f" {mark}{r.get('_change_number', '?'):>7} PS{ps}{stale} {r.get('status', ''):<8} "
-              f"{short_labels(x):<10} {subj}{topic}")
+              f"{short_labels(x):<10} {subj}{topic}{outdated_parent_note(series, i)}")
     print_siblings(c, siblings)
 
 
