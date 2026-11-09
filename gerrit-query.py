@@ -292,14 +292,18 @@ def get_comments(g, number):
                  [("enable-context", "true"), ("context-padding", "0")])
 
 
-def print_siblings(c, siblings, series=()):
-    """series: change numbers already listed as the series; left out of the topic list."""
+def print_siblings(c, siblings, series=(), skip_empty=False):
+    """series: change numbers already listed as the series; left out of the topic list.
+
+    skip_empty leaves out a section with nothing in it (for change, where
+    siblings are a side note rather than what was asked for)."""
     same_id = [x for x in siblings if x["change_id"] == c["change_id"]]
     same_topic = [x for x in siblings
                   if x["change_id"] != c["change_id"] and x["_number"] not in series]
-    print(f"\nSame Change-Id in any project or branch ({len(same_id)}):")
-    print_change_list(same_id, "  ") if same_id else print("  (none)")
-    if c.get("topic"):
+    if same_id or not skip_empty:
+        print(f"\nSame Change-Id in any project or branch ({len(same_id)}):")
+        print_change_list(same_id, "  ") if same_id else print("  (none)")
+    if c.get("topic") and (same_topic or not skip_empty):
         outside = " outside the series" if series else ""
         print(f"\nSame topic {c['topic']}{outside} ({len(same_topic)}):")
         print_change_list(same_topic, "  ") if same_topic else print("  (none)")
@@ -445,7 +449,7 @@ def cmd_change(g, args):
     print("\nFiles:")
     print_files(rev.get("files", {}))
 
-    print_siblings(c, siblings)
+    print_siblings(c, siblings, skip_empty=True)
 
     names = account_names(c)
     messages = c.get("messages", [])
