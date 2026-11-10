@@ -25,7 +25,7 @@ NUMBER_RE = re.compile(r"^\d{1,9}$")
 TICKET_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,7}$")
 CHANGE_ID_RE = re.compile(r"^I[0-9a-f]{40}$")
 QUERY_RE = re.compile(r'^[A-Za-z0-9 _.:/+\-~"(),=<>@*]{1,300}$')
-PATH_RE = re.compile(r"^[A-Za-z0-9_./+@-]{1,400}$")
+PATH_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,400}$")  # printable; .. and leading / checked separately
 
 ACCOUNT_PLACEHOLDER_RE = re.compile(r"<GERRIT_ACCOUNT_(\d+)>")
 BUILD_STARTED_RE = re.compile(r"^(Patch Set \d+:\n\n)?Build Started \S+ \(\d+/\d+\)\s*$")
@@ -80,6 +80,14 @@ def file_path(value):
     if not PATH_RE.match(value) or ".." in value.split("/") or value.startswith("/"):
         raise argparse.ArgumentTypeError(f"invalid file path: {value!r}")
     return value
+
+
+SPECIAL_COMMENT_FILES = ("/PATCHSET_LEVEL", "/COMMIT_MSG")
+
+
+def comment_file(value):
+    """A file path, or one of the pseudo-files Gerrit files comments under."""
+    return value if value in SPECIAL_COMMENT_FILES else file_path(value)
 
 
 def host_name(value):
@@ -249,9 +257,12 @@ def emit_json(data):
     print(json.dumps(trim(data), indent=1, ensure_ascii=False))
 
 
-def query_changes(g, q, limit):
-    return g.get("/changes/", [("q", q), ("n", limit), ("o", "DETAILED_ACCOUNTS"),
-                               ("o", "DETAILED_LABELS"), ("o", "CURRENT_REVISION")])
+def query_changes(g, q, limit, start=0):
+    params = [("q", q), ("n", limit), ("o", "DETAILED_ACCOUNTS"),
+              ("o", "DETAILED_LABELS"), ("o", "CURRENT_REVISION")]
+    if start:
+        params.append(("S", start))
+    return g.get("/changes/", params)
 
 
 def current_ps(c):
@@ -279,11 +290,11 @@ def change_line(c, prefix=""):
             f"{c['project']}/{c['branch']}  {c['subject']}{topic}")
 
 
-def print_change_list(changes, prefix=""):
+def print_change_list(changes, prefix="", more_hint="raise -n"):
     for c in changes:
         print(change_line(c, prefix))
     if changes and changes[-1].get("_more_changes"):
-        print(f"{prefix}(more results available; raise -n)")
+        print(f"{prefix}(more results available; {more_hint})")
 
 
 LABEL_ABBREV = {"Verified": "V", "Code-Review": "CR"}
@@ -376,16 +387,48 @@ def code_lines(cm, prefix, limit=6):
     return out
 
 
-def get_comments(g, number):
-    """Comments with the code lines they're attached to, where the server supports it."""
+def get_comments(g, number, robot=True):
+    """Comments with the code lines they're attached to, where the server supports it.
+
+    With robot, robot comments are merged in per file, so human
+    replies to them thread as usual; they carry a robot_id."""
     try:
-        return g.get(change_path(number, "comments"),
+        data = g.get(change_path(number, "comments"),
                      [("enable-context", "true"), ("context-padding", "0")])
     except BadStatus as e:
         # Older Gerrit rejects the unknown option with 400; retry without the context.
         if e.code != 400:
             raise
-        return g.get(change_path(number, "comments"))
+        data = g.get(change_path(number, "comments"))
+    if robot:
+        try:
+            robots = g.get(change_path(number, "robotcomments"))
+        except NotFound:
+            robots = {}
+        if robots:
+            data = {path: list(lst) for path, lst in data.items()}
+            for path, lst in robots.items():
+                data.setdefault(path, []).extend(lst)
+    return data
+
+
+def comment_author(cm):
+    """The comment's author, tagged with the robot that posted it, if any."""
+    robot = f" [robot: {cm['robot_id']}]" if cm.get("robot_id") else ""
+    return who(cm.get("author")) + robot
+
+
+def expand_accounts(g, text, names):
+    """Replace <GERRIT_ACCOUNT_n> with names; unknown ids are looked up once and cached."""
+    def name(m):
+        id_ = m.group(1)
+        if id_ not in names:
+            try:
+                names[id_] = who(g.get(f"/accounts/{id_}"))
+            except UsageError:
+                names[id_] = m.group(0)
+        return names[id_]
+    return ACCOUNT_PLACEHOLDER_RE.sub(name, text)
 
 
 def print_siblings(c, siblings, series=(), skip_empty=False):
@@ -429,12 +472,12 @@ def resolve_number(g, ref, limit):
 # ---------------------------------------------------------------- commands
 
 def cmd_query(g, args):
-    changes = query_changes(g, args.query, args.n)
+    changes = query_changes(g, args.query, args.n, args.start)
     if args.json:
         return emit_json(changes)
     if not changes:
         print("no results")
-    print_change_list(changes)
+    print_change_list(changes, more_hint=f"pass --start {args.start + len(changes)}")
 
 
 def format_votes(label):
@@ -526,7 +569,7 @@ def cmd_change(g, args):
     messages = c.get("messages", [])
     shown = [m for m in messages if m.get("date", "") >= cutoff]
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
-    comments = {} if args.no_comments else get_comments(g, number)
+    comments = {} if args.no_comments else get_comments(g, number, not args.no_robot)
     siblings = [] if args.no_related else sibling_changes(g, c)
     if args.json:
         if cutoff:
@@ -584,7 +627,7 @@ def cmd_change(g, args):
 
     print_siblings(c, siblings, skip_empty=True)
 
-    names = account_names(c)
+    names = account_names(comments, account_names(c))
     hidden = len(messages) - len(shown)
     print("\nMessages:" + (f" ({hidden} earlier hidden by --since-ps/--after)" if hidden else ""))
     started = []
@@ -596,8 +639,7 @@ def cmd_change(g, args):
             started.clear()
 
     for m in shown:
-        text = ACCOUNT_PLACEHOLDER_RE.sub(lambda x: names.get(x.group(1), x.group(0)),
-                                          m.get("message", ""))
+        text = expand_accounts(g, m.get("message", ""), names)
         if BUILD_STARTED_RE.match(text):
             started.append(m)
             continue
@@ -611,12 +653,14 @@ def cmd_change(g, args):
                 f"{path}:{cm['line']}{base_note(cm)}" if "line" in cm else path
             state = "thread UNRESOLVED" if states.get(cm["id"]) else "thread resolved"
             ps = f"PS{cm['patch_set']} " if cm.get("patch_set") else ""
-            print(f"    comment {ps}{where} [{state}]"
+            robot = f" [robot: {cm['robot_id']}]" if cm.get("robot_id") else ""
+            print(f"    comment {ps}{where} [{state}]{robot}"
                   + (" (reply)" if cm.get("in_reply_to") else "") + ":")
             if not cm.get("in_reply_to"):
                 for line in code_lines(cm, "      "):
                     print(line)
-            print(indent(clip(cm.get("message", "").rstrip(), args.max_msg), "      "))
+            body = expand_accounts(g, cm.get("message", "").rstrip(), names)
+            print(indent(clip(body, args.max_msg), "      "))
     flush_started()
 
 
@@ -634,8 +678,17 @@ def account_names(obj, names=None):
     return names
 
 
+def comment_file_key(path):
+    return (0 if path == "/PATCHSET_LEVEL" else 1 if path == "/COMMIT_MSG" else 2, path)
+
+
 def cmd_comments(g, args):
-    data = get_comments(g, args.number)
+    data = get_comments(g, args.number, not args.no_robot)
+    if args.file:
+        if args.file not in data:
+            listed = ", ".join(sorted(data, key=comment_file_key)) or "none"
+            raise UsageError(f"no comments on {args.file}; files with comments: {listed}")
+        data = {args.file: data[args.file]}
     cutoff = ""
     if args.since_ps or args.after:
         c = g.get(change_path(args.number), [("o", "ALL_REVISIONS")]) if args.since_ps else {}
@@ -654,11 +707,9 @@ def cmd_comments(g, args):
         print(f"Showing threads with a comment at or after {cutoff[:16]} UTC; "
               "comments from then on are marked (new).")
 
-    def file_key(path):
-        return (0 if path == "/PATCHSET_LEVEL" else 1 if path == "/COMMIT_MSG" else 2, path)
-
+    names = account_names(data)
     unresolved_threads = shown = 0
-    for path in sorted(data, key=file_key):
+    for path in sorted(data, key=comment_file_key):
         comments = data[path]
         by_id = {cm["id"]: cm for cm in comments}
         children = {}
@@ -691,10 +742,11 @@ def cmd_comments(g, args):
                 head = f"↳ [{'UNRESOLVED' if cm.get('unresolved') else 'resolved'}] "
             pad = "  " + "    " * depth
             new = " (new)" if cutoff and cm.get("updated", "") >= cutoff else ""
-            lines.append(f"{pad}{head}{who(cm.get('author'))} {minute(cm.get('updated'))}{new}:")
+            lines.append(f"{pad}{head}{comment_author(cm)} {minute(cm.get('updated'))}{new}:")
             if depth == 0:
                 lines.extend(code_lines(cm, pad + "    "))
-            lines.append(indent(cm.get("message", "").rstrip(), pad + "    "))
+            lines.append(indent(expand_accounts(g, cm.get("message", "").rstrip(), names),
+                                pad + "    "))
             for kid in children.get(cm["id"], []):
                 render(kid, depth + 1)
 
@@ -712,7 +764,8 @@ def cmd_comments(g, args):
             print("\n".join(lines))
     if cutoff and not shown:
         print("\n(no threads with activity since then)")
-    print(f"\n{unresolved_threads} unresolved thread(s) in the change"
+    scope = args.file if args.file else "the change"
+    print(f"\n{unresolved_threads} unresolved thread(s) in {scope}"
           + (f"; {shown} shown" if cutoff or args.unresolved else ""))
 
 
@@ -1013,6 +1066,8 @@ def build_parser():
     s.add_argument("--no-related", action="store_true",
                    help="don't fetch sibling changes or the parent's status "
                         "(see the related command)")
+    s.add_argument("--no-robot", action="store_true",
+                   help="leave out robot comments")
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
     add_since_args(s, "messages (and their comments)")
@@ -1020,13 +1075,19 @@ def build_parser():
 
     s = sub.add_parser("comments", help="inline comments grouped by file, threaded")
     s.add_argument("number", type=change_number)
+    s.add_argument("--file", type=comment_file, metavar="PATH",
+                   help="only this file's threads (or /PATCHSET_LEVEL, /COMMIT_MSG)")
     s.add_argument("--unresolved", action="store_true", help="only unresolved threads")
+    s.add_argument("--no-robot", action="store_true",
+                   help="leave out robot comments")
     add_since_args(s, "threads with a comment")
     s.set_defaults(func=cmd_comments)
 
     s = sub.add_parser("query", help="search changes with a Gerrit query")
     s.add_argument("query", type=query_string)
     s.add_argument("-n", type=bounded_int(1, 100), default=25, help="max results (default 25)")
+    s.add_argument("--start", type=bounded_int(0, 100000), default=0,
+                   help="skip the first N results, for paging (default 0)")
     s.set_defaults(func=cmd_query)
 
     s = sub.add_parser("files", help="files changed in a patchset")

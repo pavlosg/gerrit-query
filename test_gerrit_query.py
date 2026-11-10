@@ -139,9 +139,17 @@ class ValidatorTest(unittest.TestCase):
 
     def test_file_path(self):
         self.assertEqual(gq.file_path("engines/ep/src/a.h"), "engines/ep/src/a.h")
-        for bad in ("../x", "/etc/passwd", "a/../b", "a b"):
+        for ok in ("docs/a b.md", "a~1", "100%.txt", "c#/x.cs", "a,b"):
+            self.assertEqual(gq.file_path(ok), ok)
+        for bad in ("../x", "/etc/passwd", "a/../b", "a\nb", "a\x00b", ""):
             with self.assertRaises(Exception, msg=bad):
                 gq.file_path(bad)
+
+    def test_comment_file(self):
+        self.assertEqual(gq.comment_file("/PATCHSET_LEVEL"), "/PATCHSET_LEVEL")
+        self.assertEqual(gq.comment_file("src/a.cc"), "src/a.cc")
+        with self.assertRaises(Exception):
+            gq.comment_file("/etc/passwd")
 
     def test_date_arg(self):
         self.assertEqual(gq.date_arg("2026-11-05"), "2026-11-05")
@@ -362,7 +370,8 @@ class ChangeTest(unittest.TestCase):
         routes = change_routes(change_fixture(status="NEW"))
         g = FakeGerrit(routes)
         out = run(g, "change", "100", "--no-related")
-        self.assertEqual([p for p, _ in g.calls], ["/changes/100", "/changes/100/comments"])
+        self.assertEqual([p for p, _ in g.calls], ["/changes/100", "/changes/100/comments",
+                                                   "/changes/100/robotcomments"])
         self.assertIn("parent: ffffffffffff Parent\n", out)
         self.assertIn("Is this needed?", out)
         g = FakeGerrit(routes)
@@ -416,6 +425,106 @@ class CommentsTest(unittest.TestCase):
         with self.assertRaises(gq.BadStatus):
             gq.get_comments(g, "1")
         self.assertEqual(len(g.calls), 1)
+
+
+ROBOT = {"_account_id": 3, "name": "Couchbase Robot"}
+# Shape seen on review.couchbase.org 256108: no unresolved, robot_id and robot_run_id set.
+ROBOT_COMMENTS = {
+    "src/a.cc": [{"id": "r1", "robot_id": "droid-review", "robot_run_id": "run-1",
+                  "author": ROBOT, "change_message_id": "m1", "patch_set": 3, "line": 51,
+                  "updated": "2026-11-02 11:00:00.000000000", "message": "Lock nesting here."}],
+}
+
+
+def robot_routes(**kw):
+    comments = {"src/a.cc": [comment("h1", T4, "Fixed, thanks <GERRIT_ACCOUNT_3>", False,
+                                     "m2", reply_to="r1", line=51)]}
+    routes = change_routes(comments=comments, **kw)
+    routes["/changes/100/robotcomments"] = ROBOT_COMMENTS
+    return routes
+
+
+class RobotCommentTest(unittest.TestCase):
+    def test_comments_threads_human_reply_under_robot(self):
+        out = run(FakeGerrit(robot_routes()), "comments", "100")
+        self.assertIn("PS3 L51 [thread resolved] Couchbase Robot [robot: droid-review]", out)
+        self.assertIn("Lock nesting here.", out)
+        # The reply is nested under the robot comment, and the placeholder is expanded
+        # from the robot comment's author.
+        self.assertIn("    ↳ [resolved] Alice", out)
+        self.assertIn("Fixed, thanks Couchbase Robot", out)
+
+    def test_change_lists_robot_comment_under_its_message(self):
+        out = run(FakeGerrit(robot_routes()), "change", "100", "--no-related")
+        self.assertIn("comment PS3 src/a.cc:51 [thread resolved] [robot: droid-review]:", out)
+        self.assertIn("Lock nesting here.", out)
+
+    def test_no_robot_skips_the_request(self):
+        g = FakeGerrit(robot_routes())
+        out = run(g, "comments", "100", "--no-robot")
+        self.assertNotIn("/changes/100/robotcomments", [p for p, _ in g.calls])
+        self.assertNotIn("Lock nesting", out)
+        g = FakeGerrit(robot_routes())
+        run(g, "change", "100", "--no-related", "--no-robot")
+        self.assertNotIn("/changes/100/robotcomments", [p for p, _ in g.calls])
+
+    def test_missing_endpoint_is_tolerated(self):
+        out = run(FakeGerrit(change_routes()), "comments", "100")
+        self.assertIn("Is this needed?", out)
+
+    def test_routes_are_not_mutated(self):
+        routes = robot_routes()
+        before = len(routes["/changes/100/comments"]["src/a.cc"])
+        run(FakeGerrit(routes), "comments", "100")
+        self.assertEqual(len(routes["/changes/100/comments"]["src/a.cc"]), before)
+
+
+class CommentsFileTest(unittest.TestCase):
+    def routes(self):
+        comments = dict(COMMENTS)
+        comments["/PATCHSET_LEVEL"] = [comment("p1", T4, "LGTM", False, "m2")]
+        comments["src/b.cc"] = [comment("b1", T4, "Other file", True, "m2", line=3)]
+        return change_routes(comments=comments)
+
+    def test_one_file(self):
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--file", "src/a.cc")
+        self.assertIn("Is this needed?", out)
+        self.assertNotIn("Other file", out)
+        self.assertNotIn("LGTM", out)
+        self.assertIn("0 unresolved thread(s) in src/a.cc", out)
+
+    def test_patchset_level(self):
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--file", "/PATCHSET_LEVEL")
+        self.assertIn("LGTM", out)
+        self.assertNotIn("Is this needed?", out)
+
+    def test_unknown_file_lists_the_others(self):
+        with self.assertRaisesRegex(gq.UsageError, r"no comments on x\.cc; files with comments: "
+                                                   r"/PATCHSET_LEVEL, src/a\.cc, src/b\.cc"):
+            run(FakeGerrit(self.routes()), "comments", "100", "--file", "x.cc")
+
+
+class AccountPlaceholderTest(unittest.TestCase):
+    def test_lookup_once_and_fallback(self):
+        g = FakeGerrit({"/accounts/7": {"_account_id": 7, "name": "Bob"}})
+        names = {"1": "Alice"}
+        text = "<GERRIT_ACCOUNT_1> <GERRIT_ACCOUNT_7> <GERRIT_ACCOUNT_7> <GERRIT_ACCOUNT_9>"
+        self.assertEqual(gq.expand_accounts(g, text, names),
+                         "Alice Bob Bob <GERRIT_ACCOUNT_9>")
+        self.assertEqual([p for p, _ in g.calls], ["/accounts/7", "/accounts/9"])
+
+
+class QueryTest(unittest.TestCase):
+    def test_start_is_sent_and_named_for_the_next_page(self):
+        hits = [{**change_fixture(), "_number": n} for n in (1, 2)]
+        hits[-1]["_more_changes"] = True
+        g = FakeGerrit({"/changes/": lambda p: hits})
+        out = run(g, "query", "project:kv_engine", "-n", "2", "--start", "4")
+        self.assertIn(("S", 4), g.calls[0][1])
+        self.assertIn("(more results available; pass --start 6)", out)
+        g = FakeGerrit({"/changes/": lambda p: hits})
+        run(g, "query", "project:kv_engine")
+        self.assertNotIn("S", dict(g.calls[0][1]))
 
 
 # ---------------------------------------------------------------------- show

@@ -7,6 +7,7 @@ export GERRIT_HOST=review.couchbase.org      # or pass --host <hostname>
 ./gerrit-query.py query "project:kv_engine status:merged" -n 5
 ./gerrit-query.py change 257202              # or MB-69574, or a Change-Id
 ./gerrit-query.py comments 255786 --unresolved
+./gerrit-query.py comments 255786 --file engines/ep/src/checkpoint_manager.cc
 ./gerrit-query.py files 257202 --ps 1
 ./gerrit-query.py diff 257202 engines/ep/src/checkpoint_manager.cc
 ./gerrit-query.py show 257202 engines/ep/src/checkpoint_manager.cc --ps 1 --lines 100-160
