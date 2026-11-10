@@ -518,7 +518,7 @@ def cmd_change(g, args):
     shown = [m for m in messages if m.get("date", "") >= cutoff]
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
     comments = {} if args.no_comments else get_comments(g, number)
-    siblings = sibling_changes(g, c)
+    siblings = [] if args.no_related else sibling_changes(g, c)
     if args.json:
         if cutoff:
             # Same filter as the text output: the shown messages and their comments.
@@ -528,7 +528,8 @@ def cmd_change(g, args):
                         if (kept := [cm for cm in lst if cm.get("change_message_id") in ids])}
         if not args.no_comments:
             c["comments"] = comments
-        c["siblings"] = siblings
+        if not args.no_related:
+            c["siblings"] = siblings
         return emit_json(c)
     states = thread_states(comments)
     by_message = {}
@@ -555,7 +556,8 @@ def cmd_change(g, args):
         print(f"  ref: {rev['ref']}")
     for parent in rev.get("commit", {}).get("parents", []):
         sha = parent.get("commit", "")
-        print(f"  parent: {sha[:12]} {parent.get('subject', '')}{parent_note(g, c, sha)}")
+        note = "" if args.no_related else parent_note(g, c, sha)
+        print(f"  parent: {sha[:12]} {parent.get('subject', '')}{note}")
 
     print("\nLabels:")
     for name, label in sorted(c.get("labels", {}).items()):
@@ -930,6 +932,9 @@ def build_parser():
                    help="max candidates listed for a ticket key or Change-Id (default 50)")
     s.add_argument("--no-comments", action="store_true",
                    help="don't fetch or show review comments under the messages")
+    s.add_argument("--no-related", action="store_true",
+                   help="don't fetch sibling changes or the parent's status "
+                        "(see the related command)")
     s.add_argument("--max-msg", type=bounded_int(0, 1000000), default=800,
                    help="truncate each message to N chars (0 = no limit; default 800)")
     add_since_args(s, "messages (and their comments)")

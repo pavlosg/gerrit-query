@@ -23,7 +23,7 @@ Run it exactly like this, as a single command:
 
 | Command | Use it for |
 |---|---|
-| `change <number\|TICKET-123\|Change-Id> [-n N] [--max-msg N] [--no-comments] [--since-ps N] [--after DATE]` | Everything about one change: header, parent, votes, commit message, files, sibling changes, and messages with their review comments. A ticket or Change-Id with several matches prints a list to pick from. |
+| `change <number\|TICKET-123\|Change-Id> [-n N] [--max-msg N] [--no-comments] [--no-related] [--since-ps N] [--after DATE]` | Everything about one change: header, parent, votes, commit message, files, sibling changes, and messages with their review comments. A ticket or Change-Id with several matches prints a list to pick from. |
 | `comments <number> [--unresolved] [--since-ps N] [--after DATE]` | Review comments threaded by file, with the code each thread is on. |
 | `query "<gerrit query>" [-n N]` | One line per matching change (default 25, max 100). |
 | `files <number> [--ps N]` | Changed files with +/- counts. |
@@ -35,9 +35,10 @@ Run it exactly like this, as a single command:
 
 - `--since-ps N` keeps what was posted after patchset N was uploaded, including late replies to older patchsets' comments. `--after "YYYY-MM-DD[ HH:MM]"` is UTC. In `comments`, matching threads are shown whole with new comments marked `(new)`.
 - `--max-msg N` cuts messages and comments to N characters (default 800, `0` = full). `--no-comments` also drops `>` lines, where the author quotes earlier text.
+- `--no-comments` and `--no-related` each skip extra requests. `--no-related` drops the sibling lists and parent tags. Pass both when you need only the header, votes, commit message, files and messages, e.g. to check CV on many changes. The skipped parts are still available from `comments` and `related`.
 - `[thread resolved|UNRESOLVED]` on a thread's first comment is the whole thread's final state, not that comment's own flag.
 - In list lines, `V`/`CR` is the lowest vote if any is negative, otherwise the highest. `-` means no votes.
-- Parent tags in `change`: `[change N, NEW]` means it is stacked on another open change. `[<branch> tip is now <sha>]` only means it is behind the branch, which is not a problem by itself.
+- Parent tags in `change`: `[change N, NEW]` means it is stacked on another open change. `[<branch> tip is now <sha>]` only means it is behind the branch, which is not a problem by itself. With `--no-related` there are no tags.
 - In `related`, `[series has PS5]` means the chain uses an older patchset than the current one. `[on … of N, current is PSm: needs rebase]` means that entry needs a rebase.
 - A cross-repo series is tied together by a shared Change-Id or a shared topic, so check both lists.
 - In `diff`, the second number column is the new line number. That is the one a comment's `file:line` refers to, and the one to use when drafting an inline comment.

@@ -338,6 +338,21 @@ class ChangeTest(unittest.TestCase):
         out = run(FakeGerrit(routes), "change", "100")
         self.assertIn("parent: ffffffffffff Parent  [master tip is now tttttttttttt]", out)
 
+    def test_no_related_skips_extra_requests(self):
+        import json
+        routes = change_routes(change_fixture(status="NEW"))
+        g = FakeGerrit(routes)
+        out = run(g, "change", "100", "--no-related")
+        self.assertEqual([p for p, _ in g.calls], ["/changes/100", "/changes/100/comments"])
+        self.assertIn("parent: ffffffffffff Parent\n", out)
+        self.assertIn("Is this needed?", out)
+        g = FakeGerrit(routes)
+        out = run(g, "change", "100", "--no-related", "--no-comments")
+        self.assertEqual([p for p, _ in g.calls], ["/changes/100"])
+        self.assertIn("Build Started x2", out)
+        data = json.loads(run(FakeGerrit(routes), "--json", "change", "100", "--no-related"))
+        self.assertNotIn("siblings", data)
+
 
 # ------------------------------------------------------------------ comments
 
