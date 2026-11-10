@@ -7,6 +7,7 @@ through a fake urllib opener.
 import contextlib
 import importlib
 import io
+import json
 import unittest
 import urllib.error
 
@@ -141,7 +142,8 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(gq.file_path("engines/ep/src/a.h"), "engines/ep/src/a.h")
         for ok in ("docs/a b.md", "a~1", "100%.txt", "c#/x.cs", "a,b"):
             self.assertEqual(gq.file_path(ok), ok)
-        for bad in ("../x", "/etc/passwd", "a/../b", "a\nb", "a\x00b", ""):
+        for bad in ("../x", "/etc/passwd", "a/../b", "a\nb", "a\x00b", "",
+                    "a" + chr(0x9b) + "b", "a" + chr(0x202e) + "b", "a" + chr(0x2066) + "b"):
             with self.assertRaises(Exception, msg=bad):
                 gq.file_path(bad)
 
@@ -416,7 +418,7 @@ class CommentsTest(unittest.TestCase):
                 raise gq.BadStatus("HTTP 400", 400)
             return {"f": []}
         self.assertEqual(gq.get_comments(FakeGerrit({"/changes/1/comments": comments}), "1"),
-                         {"f": []})
+                         ({"f": []}, ""))
 
     def test_other_errors_are_not_retried(self):
         def comments(p):
@@ -471,6 +473,27 @@ class RobotCommentTest(unittest.TestCase):
     def test_missing_endpoint_is_tolerated(self):
         out = run(FakeGerrit(change_routes()), "comments", "100")
         self.assertIn("Is this needed?", out)
+        self.assertNotIn("unavailable", out)  # 404: nothing to report
+
+    def test_refused_endpoint_is_tolerated(self):
+        def refuse(p):
+            raise gq.BadStatus("HTTP 405", 405)
+        routes = change_routes()
+        routes["/changes/100/robotcomments"] = refuse
+        out = run(FakeGerrit(routes), "comments", "100")
+        self.assertIn("Is this needed?", out)
+        self.assertIn("2 comments in 1 files (robot comments unavailable: HTTP 405)\n", out)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            json.loads(run(FakeGerrit(routes), "comments", "100", "--json"))
+        self.assertEqual(err.getvalue(), "note: robot comments unavailable: HTTP 405\n")
+        out = run(FakeGerrit(routes), "change", "100", "--no-related")
+        self.assertIn("Is this needed?", out)
+        self.assertIn("\nMessages: (robot comments unavailable: HTTP 405)\n", out)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            json.loads(run(FakeGerrit(routes), "change", "100", "--no-related", "--json"))
+        self.assertEqual(err.getvalue(), "note: robot comments unavailable: HTTP 405\n")
 
     def test_routes_are_not_mutated(self):
         routes = robot_routes()
@@ -543,6 +566,17 @@ class CommentsAuthorTest(unittest.TestCase):
         self.assertIn("Is this needed?", out)  # kept whole for Bob's 16:00 reply
         self.assertNotIn("Bob's thread", out)  # Bob's, but posted at 15:03
 
+    def test_author_with_since_ps(self):
+        # PS4 was uploaded at 15:03:38. Alice's c1 is older; her c2 (15:03:45) isn't.
+        routes = self.routes()
+        lst = routes["/changes/100/comments"]["src/a.cc"]
+        lst[1] = {**lst[1], "updated": T3}  # a copy: the fixture is shared
+        out = run(FakeGerrit(routes), "comments", "100", "--author", "alice", "--since-ps", "4")
+        self.assertIn("(no matching threads)", out)  # Bob's later reply doesn't count
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "alice",
+                  "--since-ps", "4")
+        self.assertIn("Is this needed?", out)
+
     def test_json_matches_text(self):
         import json
         out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "alice", "--json")
@@ -564,6 +598,16 @@ class AccountPlaceholderTest(unittest.TestCase):
         self.assertEqual(gq.expand_accounts(g, text, names),
                          "Alice Bob Bob <GERRIT_ACCOUNT_9>")
         self.assertEqual([p for p, _ in g.calls], ["/accounts/7", "/accounts/9"])
+
+    def test_names_fall_back_to_username_and_email(self):
+        names = gq.account_names([{"_account_id": 5, "username": "carol"},
+                                  {"_account_id": 6, "email": "dan@example.org"},
+                                  {"_account_id": 8}])
+        self.assertEqual(names, {"5": "carol", "6": "dan@example.org"})
+        # A full name wins over a username seen earlier for the same account.
+        names = gq.account_names([{"_account_id": 5, "username": "carol"},
+                                  {"_account_id": 5, "name": "Carol C", "username": "carol"}])
+        self.assertEqual(names, {"5": "Carol C"})
 
 
 class QueryTest(unittest.TestCase):

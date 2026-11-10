@@ -25,7 +25,12 @@ NUMBER_RE = re.compile(r"^\d{1,9}$")
 TICKET_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,7}$")
 CHANGE_ID_RE = re.compile(r"^I[0-9a-f]{40}$")
 QUERY_RE = re.compile(r'^[A-Za-z0-9 _.:/+\-~"(),=<>@*]{1,300}$')
-PATH_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,400}$")  # printable; .. and leading / checked separately
+# Printable: no C0/C1 controls or DEL, and no bidi embeddings, overrides or isolates,
+# which could disguise the path when it is echoed back. .. and a leading / are
+# checked separately.
+PATH_RE = re.compile(r"^[^\x00-\x1f\x7f-\x9f"
+                     r"\N{LEFT-TO-RIGHT EMBEDDING}-\N{RIGHT-TO-LEFT OVERRIDE}"
+                     r"\N{LEFT-TO-RIGHT ISOLATE}-\N{POP DIRECTIONAL ISOLATE}]{1,400}$")
 
 ACCOUNT_PLACEHOLDER_RE = re.compile(r"<GERRIT_ACCOUNT_(\d+)>")
 BUILD_STARTED_RE = re.compile(r"^(Patch Set \d+:\n\n)?Build Started \S+ \(\d+/\d+\)\s*$")
@@ -398,7 +403,10 @@ def get_comments(g, number, robot=True):
     """Comments with the code lines they're attached to, where the server supports it.
 
     With robot, robot comments are merged in per file, so human
-    replies to them thread as usual; they carry a robot_id."""
+    replies to them thread as usual; they carry a robot_id.
+
+    Returns (comments, robot_error): robot_error is "" or why the server refused
+    the robot comments (e.g. "HTTP 405"), so the caller can say they're missing."""
     try:
         data = g.get(change_path(number, "comments"),
                      [("enable-context", "true"), ("context-padding", "0")])
@@ -407,16 +415,21 @@ def get_comments(g, number, robot=True):
         if e.code != 400:
             raise
         data = g.get(change_path(number, "comments"))
+    robot_error = ""
     if robot:
         try:
             robots = g.get(change_path(number, "robotcomments"))
         except NotFound:
-            robots = {}
+            robots = {}  # no such endpoint, or none to see
+        except BadStatus as e:
+            # Robot comments are deprecated in newer Gerrit; a server may refuse the
+            # endpoint. The human comments are already in hand, so show those.
+            robots, robot_error = {}, f"HTTP {e.code}"
         if robots:
             data = {path: list(lst) for path, lst in data.items()}
             for path, lst in robots.items():
                 data.setdefault(path, []).extend(lst)
-    return data
+    return data, robot_error
 
 
 def author_matches(cm, needle):
@@ -591,7 +604,8 @@ def cmd_change(g, args):
     messages = c.get("messages", [])
     shown = [m for m in messages if m.get("date", "") >= cutoff]
     # A reply's text lives in its comments, not in the change message ("(1 comment)").
-    comments = {} if args.no_comments else get_comments(g, number, not args.no_robot)
+    comments, robot_error = ({}, "") if args.no_comments else \
+        get_comments(g, number, not args.no_robot)
     siblings = [] if args.no_related else sibling_changes(g, c)
     if args.json:
         if cutoff:
@@ -604,6 +618,8 @@ def cmd_change(g, args):
             c["comments"] = comments
         if not args.no_related:
             c["siblings"] = siblings
+        if robot_error:
+            print(f"note: robot comments unavailable: {robot_error}", file=sys.stderr)
         return emit_json(c)
     states = thread_states(comments)
     by_message = {}
@@ -651,7 +667,8 @@ def cmd_change(g, args):
 
     names = account_names(comments, account_names(c))
     hidden = len(messages) - len(shown)
-    print("\nMessages:" + (f" ({hidden} earlier hidden by --since-ps/--after)" if hidden else ""))
+    print("\nMessages:" + (f" ({hidden} earlier hidden by --since-ps/--after)" if hidden else "")
+          + (f" (robot comments unavailable: {robot_error})" if robot_error else ""))
     started = []
 
     def flush_started():
@@ -687,11 +704,16 @@ def cmd_change(g, args):
 
 
 def account_names(obj, names=None):
-    """Collect _account_id -> name from every account object in a response."""
+    """Collect _account_id -> display name from every account object in a response.
+
+    Falls back to username or email like who(), so expand_accounts only looks up
+    accounts that appear in the response with none of them."""
     names = {} if names is None else names
     if isinstance(obj, dict):
-        if "_account_id" in obj and obj.get("name"):
-            names[str(obj["_account_id"])] = obj["name"]
+        if "_account_id" in obj and (obj.get("name") or obj.get("username") or obj.get("email")):
+            key = str(obj["_account_id"])
+            if obj.get("name") or key not in names:
+                names[key] = who(obj)
         for v in obj.values():
             account_names(v, names)
     elif isinstance(obj, list):
@@ -705,7 +727,8 @@ def comment_file_key(path):
 
 
 def cmd_comments(g, args):
-    data = get_comments(g, args.number, not args.no_robot)
+    data, robot_error = get_comments(g, args.number, not args.no_robot)
+    robot_note = f" (robot comments unavailable: {robot_error})" if robot_error else ""
     if args.file:
         if args.file not in data:
             listed = ", ".join(sorted(data, key=comment_file_key)) or "none"
@@ -723,9 +746,11 @@ def cmd_comments(g, args):
                            if keep_thread(members, cutoff, args.author) for cm in members]
                     for path, lst in data.items()}
             data = {p: lst for p, lst in data.items() if lst}
+        if robot_error:
+            print(f"note: robot comments unavailable: {robot_error}", file=sys.stderr)
         return emit_json(data)
     total = sum(len(v) for v in data.values())
-    print(f"Change {args.number}: {total} comments in {len(data)} files")
+    print(f"Change {args.number}: {total} comments in {len(data)} files{robot_note}")
     if filtered:
         by = f" by {args.author!r}" if args.author else ""
         since = f" at or after {cutoff[:16]} UTC" if cutoff else ""
