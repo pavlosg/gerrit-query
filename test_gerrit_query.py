@@ -48,7 +48,7 @@ T4 = "2026-11-02 15:03:38.000000000"
 
 
 def comment(id_, when, message, unresolved, msg_id, reply_to=None, line=None, ps=3,
-            context=None):
+            context=None, side=None):
     cm = {"id": id_, "updated": when, "message": message, "unresolved": unresolved,
           "change_message_id": msg_id, "patch_set": ps, "author": ME}
     if reply_to:
@@ -57,6 +57,8 @@ def comment(id_, when, message, unresolved, msg_id, reply_to=None, line=None, ps
         cm["line"] = line
     if context:
         cm["context_lines"] = context
+    if side:
+        cm["side"] = side
     return cm
 
 
@@ -99,6 +101,18 @@ COMMENTS = {
                 line=51, context=[{"line_number": 51, "context_line": "template <typename U = T>"}]),
         comment("c2", "2026-11-02 15:03:45.000000000", "Done", False, "m3", reply_to="c1",
                 line=51),
+    ],
+}
+
+
+# A thread on the old side of the diff (shape seen on review.couchbase.org 257569).
+BASE_SIDE_COMMENTS = {
+    "src/a.cc": [
+        comment("c1", "2026-11-02 11:00:00.000000000", "Removed stat?", True, "m1",
+                line=51, side="PARENT",
+                context=[{"line_number": 51, "context_line": '"ep_removed_stat",'}]),
+        comment("c2", "2026-11-02 15:03:45.000000000", "Done", False, "m3", reply_to="c1",
+                line=51, side="PARENT"),
     ],
 }
 
@@ -321,6 +335,11 @@ class ChangeTest(unittest.TestCase):
         self.assertIn("ref: refs/changes/00/100/4", out)
         self.assertNotIn("Same Change-Id", out)  # empty sibling lists are left out
 
+    def test_base_side_comment(self):
+        out = run(FakeGerrit(change_routes(comments=BASE_SIDE_COMMENTS)), "change", "100")
+        self.assertIn("comment PS3 src/a.cc:51 (base) [thread resolved]:", out)
+        self.assertIn('|    51  "ep_removed_stat",', out)
+
     def test_parent_on_older_patchset_of_open_change(self):
         parent = {"_number": 99, "status": "NEW", "current_revision": "e" * 40,
                   "revisions": {"e" * 40: {"_number": 6}}}
@@ -375,6 +394,12 @@ class CommentsTest(unittest.TestCase):
         self.assertIn("PS3 L51 [thread resolved]", out)
         self.assertIn("\npatchset-level\n", out)
         self.assertIn("PS3 [thread resolved]", out)  # no "file" label for patchset-level
+
+    def test_base_side_comment(self):
+        out = run(FakeGerrit(change_routes(comments=BASE_SIDE_COMMENTS)), "comments", "100")
+        self.assertIn("PS3 L51 (base) [thread resolved]", out)
+        out = run(FakeGerrit(change_routes()), "comments", "100")
+        self.assertNotIn("(base)", out)
 
     def test_falls_back_without_context_on_400(self):
         def comments(p):

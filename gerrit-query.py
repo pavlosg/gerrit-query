@@ -361,6 +361,11 @@ def thread_states(comments):
     return states
 
 
+def base_note(cm):
+    """Gerrit sets side PARENT on a comment on the old code; its line is in the base file."""
+    return " (base)" if cm.get("side") == "PARENT" else ""
+
+
 def code_lines(cm, prefix, limit=6):
     """The source lines a comment is attached to (from enable-context)."""
     ctx = cm.get("context_lines") or []
@@ -603,7 +608,7 @@ def cmd_change(g, args):
         for path, cm in sorted(by_message.get(m.get("id"), []),
                                key=lambda pc: (pc[0] != "/PATCHSET_LEVEL", pc[0], pc[1].get("line", 0))):
             where = "patchset" if path == "/PATCHSET_LEVEL" else \
-                f"{path}:{cm['line']}" if "line" in cm else path
+                f"{path}:{cm['line']}{base_note(cm)}" if "line" in cm else path
             state = "thread UNRESOLVED" if states.get(cm["id"]) else "thread resolved"
             ps = f"PS{cm['patch_set']} " if cm.get("patch_set") else ""
             print(f"    comment {ps}{where} [{state}]"
@@ -678,7 +683,7 @@ def cmd_comments(g, args):
         def render(cm, depth):
             if depth == 0:
                 # The root carries the thread's final state; replies keep their own flag.
-                loc = f" L{cm['line']}" if "line" in cm else \
+                loc = f" L{cm['line']}{base_note(cm)}" if "line" in cm else \
                     "" if path == "/PATCHSET_LEVEL" else " file"
                 state = "thread UNRESOLVED" if last_of(cm).get("unresolved") else "thread resolved"
                 head = f"PS{cm.get('patch_set', '?')}{loc} [{state}] "
