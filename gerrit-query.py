@@ -187,7 +187,11 @@ class Gerrit:
         if file_:
             if rev == "current":
                 rev = current_ps_number(self, number) or "current"
-            return f"file {urllib.parse.unquote(file_)} not found in patchset {rev} of change {number}"
+            name = urllib.parse.unquote(file_)
+            if params.get("parent"):
+                return (f"file {name} not found in the parent of patchset {rev} "
+                        f"of change {number} (added by this change?)")
+            return f"file {name} not found in patchset {rev} of change {number}"
         return f"not found: {path}"
 
     @staticmethod
@@ -808,11 +812,40 @@ def cmd_diff(g, args):
         print("\n".join(out).rstrip())
 
 
+def merge_ranges(ranges):
+    """Sort (first, last) ranges and merge the ones that overlap or touch."""
+    merged = []
+    for a, b in sorted(ranges):
+        if merged and a <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [tuple(r) for r in merged]
+
+
+def runs(numbers):
+    """Split sorted line numbers into runs of consecutive ones."""
+    out = []
+    for n in numbers:
+        if out and n == out[-1][-1] + 1:
+            out[-1].append(n)
+        else:
+            out.append([n])
+    return out
+
+
+def spans(groups):
+    return ", ".join(f"{g[0]}-{g[-1]}" for g in groups)
+
+
 def cmd_show(g, args):
+    if args.context and not args.grep:
+        raise UsageError("--context needs --grep")
     rev = str(args.ps) if args.ps else "current"
     # With Accept: application/json Gerrit returns the content as a JSON string.
     text = g.get(change_path(args.number, "revisions", rev, "files",
-                             urllib.parse.quote(args.file, safe=""), "content"))
+                             urllib.parse.quote(args.file, safe=""), "content"),
+                 [("parent", 1)] if args.parent else None)
     if not isinstance(text, str):
         raise UsageError(f"unexpected response for {args.file}")
     if "\0" in text:
@@ -824,28 +857,60 @@ def cmd_show(g, args):
     if lines[-1] == "":
         lines.pop()  # the newline ending the last line
     where = f"patchset {rev}" if args.ps else "current patchset"
+    if args.parent:
+        where = "parent of " + where
+    total = len(lines)
     if not lines and not args.lines:
         if args.json:
-            return emit_json({"file": args.file, "patchset": rev, "first_line": 1,
-                              "total_lines": 0, "lines": []})
+            return emit_json({"file": args.file, "patchset": rev, "parent": args.parent,
+                              "first_line": 1, "total_lines": 0, "lines": []})
         print(f"Change {args.number} {where}: {args.file} (empty file)")
         return
-    first, last = args.lines or (1, len(lines))
-    if first > len(lines):
-        raise UsageError(f"{args.file} has only {len(lines)} lines")
-    wanted = min(last, len(lines))
+    for first, _ in args.lines or []:
+        if first > total:
+            raise UsageError(f"{args.file} has only {total} lines")
+    ranges = merge_ranges((a, min(b, total)) for a, b in args.lines or [(1, total)])
+    selected = [n for a, b in ranges for n in range(a, b + 1)]
+    matches = []
+    if args.grep:
+        matches = [n for n in selected if args.grep.search(lines[n - 1])]
+        near = {n + d for n in matches for d in range(-args.context, args.context + 1)}
+        kept = [n for n in selected if n in near]
+    else:
+        kept = selected
     # The header names the lines actually printed, after the --max-lines cap.
-    last = min(wanted, first + args.max_lines - 1)
-    picked = lines[first - 1:last]
+    shown = kept[:args.max_lines]
+    groups = runs(shown)
     if args.json:
-        return emit_json({"file": args.file, "patchset": rev, "first_line": first,
-                          "total_lines": len(lines), "lines": picked})
-    print(f"Change {args.number} {where}: {args.file} "
-          f"(lines {first}-{last} of {len(lines)})")
-    for i, line in enumerate(picked, first):
-        print(f"{i:>5}  {line}")
-    if wanted > last:
-        print(f"…[truncated: {wanted - last} more lines; "
+        data = {"file": args.file, "patchset": rev, "parent": args.parent, "total_lines": total}
+        if not args.grep and len(args.lines or []) <= 1:
+            first = shown[0] if shown else 1
+            return emit_json({**data, "first_line": first,
+                              "lines": [lines[n - 1] for n in shown]})
+        data["groups"] = [{"first_line": grp[0], "lines": [lines[n - 1] for n in grp]}
+                          for grp in groups]
+        if args.grep:
+            data["matches"] = matches
+        return emit_json(data)
+    if args.grep:
+        scope = f" in lines {spans(ranges)}" if args.lines else ""
+        what = f"{len(matches)} matching lines{scope} of {total}"
+    else:
+        what = f"lines {spans(groups)} of {total}"
+    print(f"Change {args.number} {where}: {args.file} ({what})")
+    if args.grep and not matches:
+        print("(no matches)")
+    hits = set(matches)
+    for i, grp in enumerate(groups):
+        if i:
+            print("--")
+        for n in grp:
+            if args.no_line_numbers:
+                print(lines[n - 1])
+            else:
+                print(f"{n:>5}{':' if n in hits else ' '} {lines[n - 1]}")
+    if len(kept) > len(shown):
+        print(f"…[truncated: {len(kept) - len(shown)} more lines; "
               "use --lines A-B or raise --max-lines]")
 
 
@@ -854,6 +919,14 @@ def line_range(value):
     if not m or not 1 <= int(m.group(1)) <= int(m.group(2)):
         raise argparse.ArgumentTypeError(f"expected a line range like 40-80, got {value!r}")
     return int(m.group(1)), int(m.group(2))
+
+
+def regex_arg(value):
+    """A Python regex for show --grep; matched locally, never sent to the server."""
+    try:
+        return re.compile(value)
+    except re.error as e:
+        raise argparse.ArgumentTypeError(f"invalid regex {value!r}: {e}")
 
 
 def outdated_parent_note(series, i):
@@ -971,8 +1044,17 @@ def build_parser():
     s.add_argument("number", type=change_number)
     s.add_argument("file", type=file_path)
     s.add_argument("--ps", type=bounded_int(1, 9999), help="patchset (default current)")
-    s.add_argument("--lines", type=line_range, help="only lines A-B, e.g. 40-80")
+    s.add_argument("--parent", action="store_true",
+                   help="the file in the patchset's parent commit (before the change)")
+    s.add_argument("--lines", type=line_range, action="append",
+                   help="only lines A-B, e.g. 40-80; repeat for several ranges")
+    s.add_argument("--grep", type=regex_arg, metavar="REGEX",
+                   help="only lines matching this Python regex ((?i) for any case)")
+    s.add_argument("--context", type=bounded_int(0, 1000), default=0,
+                   help="with --grep, lines of context around each match (default 0)")
     s.add_argument("--max-lines", type=bounded_int(1, 1000000), default=2000)
+    s.add_argument("--no-line-numbers", action="store_true",
+                   help="print the lines without the line-number column")
     s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("related", help="series, same Change-Id elsewhere, same topic")

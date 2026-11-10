@@ -445,6 +445,75 @@ class ShowTest(unittest.TestCase):
         with self.assertRaisesRegex(gq.UsageError, "has only 10 lines"):
             run(FakeGerrit({self.PATH: self.TEXT}), "show", "100", "f.h", "--lines", "11-12")
 
+    def show(self, *argv, text=TEXT):
+        return run(FakeGerrit({self.PATH: text}), "show", "100", "f.h", *argv)
+
+    def test_several_ranges(self):
+        out = self.show("--lines", "7-8", "--lines", "2-3")
+        self.assertEqual(out.splitlines(), [
+            "Change 100 current patchset: f.h (lines 2-3, 7-8 of 10)",
+            "    2  l2", "    3  l3", "--", "    7  l7", "    8  l8"])
+
+    def test_overlapping_ranges_merge(self):
+        self.assertIn("(lines 2-6 of 10)", self.show("--lines", "2-4", "--lines", "3-6"))
+        self.assertIn("(lines 2-5 of 10)", self.show("--lines", "2-3", "--lines", "4-5"))
+
+    def test_any_range_past_end(self):
+        with self.assertRaisesRegex(gq.UsageError, "has only 10 lines"):
+            self.show("--lines", "1-2", "--lines", "11-12")
+
+    def test_several_ranges_json(self):
+        import json
+        data = json.loads(self.show("--json", "--lines", "2-3", "--lines", "9-20"))
+        self.assertEqual(data["groups"], [{"first_line": 2, "lines": ["l2", "l3"]},
+                                          {"first_line": 9, "lines": ["l9", "l10"]}])
+
+    def test_no_line_numbers(self):
+        self.assertEqual(self.show("--no-line-numbers", "--lines", "1-2").splitlines()[1:],
+                         ["l1", "l2"])
+
+    def test_parent(self):
+        g = FakeGerrit({self.PATH: lambda p: "old\n" if p.get("parent") == 1 else "new\n"})
+        out = run(g, "show", "100", "f.h", "--parent")
+        self.assertTrue(out.startswith("Change 100 parent of current patchset: f.h"))
+        self.assertIn("    1  old", out)
+        self.assertEqual(g.calls, [(self.PATH, [("parent", 1)])])
+
+    def test_grep(self):
+        out = self.show("--grep", "l[37]$")
+        self.assertEqual(out.splitlines(), [
+            "Change 100 current patchset: f.h (2 matching lines of 10)",
+            "    3: l3", "--", "    7: l7"])
+
+    def test_grep_context_merges_and_separates(self):
+        out = self.show("--grep", "^l(2|4|9)$", "--context", "1")
+        self.assertEqual(out.splitlines()[1:], [
+            "    1  l1", "    2: l2", "    3  l3", "    4: l4", "    5  l5", "--",
+            "    8  l8", "    9: l9", "   10  l10"])
+
+    def test_grep_within_ranges(self):
+        out = self.show("--grep", "l", "--context", "2", "--lines", "4-5")
+        self.assertEqual(out.splitlines(), [
+            "Change 100 current patchset: f.h (2 matching lines in lines 4-5 of 10)",
+            "    4: l4", "    5: l5"])
+
+    def test_grep_no_matches(self):
+        self.assertEqual(self.show("--grep", "zzz").splitlines()[1:], ["(no matches)"])
+
+    def test_grep_json(self):
+        import json
+        data = json.loads(self.show("--json", "--grep", "l3$", "--context", "1"))
+        self.assertEqual(data["matches"], [3])
+        self.assertEqual(data["groups"], [{"first_line": 2, "lines": ["l2", "l3", "l4"]}])
+
+    def test_grep_bad_regex(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.show("--grep", "(")
+
+    def test_context_needs_grep(self):
+        with self.assertRaisesRegex(gq.UsageError, "--context needs --grep"):
+            self.show("--context", "2")
+
 
 # ----------------------------------------------------------------- HTTP layer
 
@@ -494,6 +563,11 @@ class NotFoundTest(unittest.TestCase):
     def test_missing_file(self):
         self.assertEqual(self.error(FakeOpener(missing={self.CONTENT})),
                          "file x.h not found in patchset 9 of change 1")
+
+    def test_missing_file_in_parent(self):
+        self.assertEqual(self.error(FakeOpener(missing={self.CONTENT}), params=[("parent", 1)]),
+                         "file x.h not found in the parent of patchset 9 of change 1 "
+                         "(added by this change?)")
 
     def test_missing_file_in_current_names_its_patchset(self):
         path = "/changes/1/revisions/current/files/x.h/content"

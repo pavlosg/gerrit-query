@@ -28,7 +28,7 @@ Run it exactly like this, as a single command:
 | `query "<gerrit query>" [-n N]` | One line per matching change (default 25, max 100). |
 | `files <number> [--ps N]` | Changed files with +/- counts. |
 | `diff <number> [file] [--ps N] [--base M] [--context C] [--max-lines L] [--no-line-numbers]` | Unified diff. `--base M` diffs patchset M against `--ps` (or current). |
-| `show <number> <file> [--ps N] [--lines A-B] [--max-lines L]` | A whole file at a patchset. Use this, not `diff --context` or a `git fetch`, to read a file in full. |
+| `show <number> <file> [--ps N] [--parent] [--lines A-B]... [--grep RE [--context N]] [--no-line-numbers] [--max-lines L]` | A file at a patchset, or with `--parent` as it was before the change. Use this, not `diff --context`, `git fetch` or `grep` on a copy. |
 | `related <number>` | The series (newest first, `*` = this change), then same Change-Id and same-topic changes. |
 
 ## Flags and output that aren't self-explanatory
@@ -41,6 +41,7 @@ Run it exactly like this, as a single command:
 - Parent tags in `change`: `[change N, NEW]` means it is stacked on another open change. `[<branch> tip is now <sha>]` only means it is behind the branch, which is not a problem by itself. With `--no-related` there are no tags.
 - In `related`, `[series has PS5]` means the chain uses an older patchset than the current one. `[on … of N, current is PSm: needs rebase]` means that entry needs a rebase.
 - A cross-repo series is tied together by a shared Change-Id or a shared topic, so check both lists.
+- In `show`, repeat `--lines` to get several ranges in one call. `--grep` takes a Python regex (`(?i)` for any case) and searches only within `--lines` if given. Use it to find functions instead of reading the whole file. `:` after the number marks a matching line, and `--` separates groups.
 - In `diff`, the second number column is the new line number. That is the one a comment's `file:line` refers to, and the one to use when drafting an inline comment.
 - CV results: the `Verified` label and Build Bot messages. Failed jobs appear as `<jenkins url> : FAILURE`. Runs of plain "Build Started" messages are collapsed into one line (`Build Started xN`).
 

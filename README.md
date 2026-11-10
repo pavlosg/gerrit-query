@@ -10,6 +10,8 @@ export GERRIT_HOST=review.couchbase.org      # or pass --host <hostname>
 ./gerrit-query.py files 257202 --ps 1
 ./gerrit-query.py diff 257202 engines/ep/src/checkpoint_manager.cc
 ./gerrit-query.py show 257202 engines/ep/src/checkpoint_manager.cc --ps 1 --lines 100-160
+./gerrit-query.py show 257202 engines/ep/src/checkpoint_manager.cc --grep 'CheckpointManager::\w+\(' --context 2
+./gerrit-query.py show 257202 engines/ep/src/checkpoint_manager.cc --parent --lines 1-20 --lines 300-340
 ./gerrit-query.py related 256816
 ```
 
