@@ -24,7 +24,7 @@ Run it exactly like this, as a single command:
 | Command | Use it for |
 |---|---|
 | `change <number\|TICKET-123\|Change-Id> [-n N] [--max-msg N] [--no-comments] [--no-robot] [--no-related] [--since-ps N] [--after DATE]` | Everything about one change: header, parent, votes, commit message, files, sibling changes, and messages with their review comments. A ticket or Change-Id with several matches prints a list to pick from. |
-| `comments <number> [--file PATH] [--unresolved] [--no-robot] [--since-ps N] [--after DATE]` | Review comments threaded by file, with the code each thread is on. `--file` takes a path, `/PATCHSET_LEVEL` or `/COMMIT_MSG`. |
+| `comments <number> [--file PATH] [--author TEXT] [--unresolved] [--no-robot] [--since-ps N] [--after DATE]` | Review comments threaded by file, with the code each thread is on. `--file` takes a path, `/PATCHSET_LEVEL` or `/COMMIT_MSG`. |
 | `query "<gerrit query>" [-n N] [--start N]` | One line per matching change (default 25, max 100). `--start` pages past them. |
 | `files <number> [--ps N]` | Changed files with +/- counts. |
 | `diff <number> [file] [--ps N] [--base M] [--context C] [--max-lines L] [--no-line-numbers]` | Unified diff. `--base M` diffs patchset M against `--ps` (or current). |
@@ -34,6 +34,7 @@ Run it exactly like this, as a single command:
 ## Flags and output that aren't self-explanatory
 
 - `--since-ps N` keeps what was posted after patchset N was uploaded, including late replies to older patchsets' comments. `--after "YYYY-MM-DD[ HH:MM]"` is UTC. In `comments`, matching threads are shown whole with new comments marked `(new)`.
+- `comments --author TEXT` keeps whole threads with a comment whose author name, username, email or robot id contains TEXT (any case). With `--since-ps`/`--after`, that comment must also be after the cutoff.
 - `--max-msg N` cuts messages and comments to N characters (default 800, `0` = full). `--no-comments` also drops `>` lines, where the author quotes earlier text.
 - `--no-comments` and `--no-related` each skip extra requests. `--no-related` drops the sibling lists and parent tags. Pass both when you need only the header, votes, commit message, files and messages, e.g. to check CV on many changes. The skipped parts are still available from `comments` and `related`.
 - Robot comments are included and marked `[robot: <robot_id>]`. They have no resolved flag, so they count as resolved. `--no-robot` leaves them out.

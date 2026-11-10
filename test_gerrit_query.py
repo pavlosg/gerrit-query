@@ -504,6 +504,58 @@ class CommentsFileTest(unittest.TestCase):
             run(FakeGerrit(self.routes()), "comments", "100", "--file", "x.cc")
 
 
+BOB = {"_account_id": 4, "name": "Bob Builder", "username": "bob", "email": "bob@example.org"}
+
+
+class CommentsAuthorTest(unittest.TestCase):
+    def routes(self):
+        reply = comment("c3", "2026-11-02 16:00:00.000000000", "Agreed", False, "m2",
+                        reply_to="c1", line=51)
+        reply["author"] = BOB
+        bob = comment("b1", T4, "Bob's thread", True, "m2", line=3)
+        bob["author"] = BOB
+        return change_routes(comments={"src/a.cc": [*COMMENTS["src/a.cc"], reply],
+                                       "src/b.cc": [bob]})
+
+    def test_whole_threads_with_a_matching_comment(self):
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "BOB@example")
+        self.assertIn("Is this needed?", out)  # Alice's root, kept for Bob's reply
+        self.assertIn("Bob's thread", out)
+        self.assertIn("Showing threads with a comment by 'BOB@example'.", out)
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "alice")
+        self.assertIn("Agreed", out)  # Bob's reply stays with Alice's thread
+        self.assertNotIn("Bob's thread", out)
+        self.assertIn("; 1 shown", out)
+
+    def test_robot_id(self):
+        out = run(FakeGerrit(robot_routes()), "comments", "100", "--author", "droid-review")
+        self.assertIn("Lock nesting here.", out)
+
+    def test_author_and_cutoff_must_hold_for_the_same_comment(self):
+        # The src/a.cc thread has activity after 15:30 (Bob's reply) and comments by
+        # Alice, but none by Alice after 15:30, so it is hidden.
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "alice",
+                  "--after", "2026-11-02 15:30")
+        self.assertIn("(no matching threads)", out)
+        self.assertIn("; 0 shown", out)
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "bob",
+                  "--after", "2026-11-02 15:30")
+        self.assertIn("Is this needed?", out)  # kept whole for Bob's 16:00 reply
+        self.assertNotIn("Bob's thread", out)  # Bob's, but posted at 15:03
+
+    def test_json_matches_text(self):
+        import json
+        out = run(FakeGerrit(self.routes()), "comments", "100", "--author", "alice", "--json")
+        data = json.loads(out)
+        self.assertEqual(list(data), ["src/a.cc"])
+        self.assertEqual([cm["id"] for cm in data["src/a.cc"]], ["c1", "c2", "c3"])
+
+    def test_validator(self):
+        for bad in ("", "a\nb", "x" * 101):
+            with self.assertRaises(Exception, msg=bad):
+                gq.author_arg(bad)
+
+
 class AccountPlaceholderTest(unittest.TestCase):
     def test_lookup_once_and_fallback(self):
         g = FakeGerrit({"/accounts/7": {"_account_id": 7, "name": "Bob"}})

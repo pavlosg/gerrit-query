@@ -90,6 +90,13 @@ def comment_file(value):
     return value if value in SPECIAL_COMMENT_FILES else file_path(value)
 
 
+def author_arg(value):
+    """Text matched locally against comment authors; never sent to the server."""
+    if not 1 <= len(value) <= 100 or re.search(r"[\x00-\x1f\x7f]", value):
+        raise argparse.ArgumentTypeError(f"invalid author: {value!r}")
+    return value
+
+
 def host_name(value):
     if not HOST_RE.match(value):
         raise argparse.ArgumentTypeError(
@@ -412,6 +419,21 @@ def get_comments(g, number, robot=True):
     return data
 
 
+def author_matches(cm, needle):
+    """Case-insensitive substring of the author's name, username, email or robot id."""
+    a = cm.get("author") or {}
+    fields = [a.get(k) for k in ("name", "username", "email", "display_name")]
+    fields.append(cm.get("robot_id"))
+    needle = needle.lower()
+    return any(needle in f.lower() for f in fields if isinstance(f, str))
+
+
+def keep_thread(members, cutoff, author):
+    """True if one comment in the thread passes both the time and the author filter."""
+    return any((not cutoff or cm.get("updated", "") >= cutoff)
+               and (not author or author_matches(cm, author)) for cm in members)
+
+
 def comment_author(cm):
     """The comment's author, tagged with the robot that posted it, if any."""
     robot = f" [robot: {cm['robot_id']}]" if cm.get("robot_id") else ""
@@ -693,24 +715,28 @@ def cmd_comments(g, args):
     if args.since_ps or args.after:
         c = g.get(change_path(args.number), [("o", "ALL_REVISIONS")]) if args.since_ps else {}
         cutoff = activity_cutoff(c, args.number, args)
+    filtered = bool(cutoff or args.author)
     if args.json:
-        if cutoff:
-            # Keep whole threads that have activity since the cutoff.
+        if filtered:
+            # Same filter as the text output: whole threads with a matching comment.
             data = {path: [cm for members in threads_of(lst).values()
-                           if newest(members).get("updated", "") >= cutoff for cm in members]
+                           if keep_thread(members, cutoff, args.author) for cm in members]
                     for path, lst in data.items()}
             data = {p: lst for p, lst in data.items() if lst}
         return emit_json(data)
     total = sum(len(v) for v in data.values())
     print(f"Change {args.number}: {total} comments in {len(data)} files")
-    if cutoff:
-        print(f"Showing threads with a comment at or after {cutoff[:16]} UTC; "
-              "comments from then on are marked (new).")
+    if filtered:
+        by = f" by {args.author!r}" if args.author else ""
+        since = f" at or after {cutoff[:16]} UTC" if cutoff else ""
+        print(f"Showing threads with a comment{by}{since}"
+              + ("; comments from then on are marked (new)." if cutoff else "."))
 
     names = account_names(data)
     unresolved_threads = shown = 0
     for path in sorted(data, key=comment_file_key):
         comments = data[path]
+        members = threads_of(comments)
         by_id = {cm["id"]: cm for cm in comments}
         children = {}
         roots = []
@@ -755,18 +781,18 @@ def cmd_comments(g, args):
             unresolved_threads += unresolved
             if args.unresolved and not unresolved:
                 continue
-            if cutoff and last_of(root).get("updated", "") < cutoff:
+            if filtered and not keep_thread(members[root["id"]], cutoff, args.author):
                 continue
             shown += 1
             render(root, 0)
         if lines:
             print("\npatchset-level" if path == "/PATCHSET_LEVEL" else f"\n{path}")
             print("\n".join(lines))
-    if cutoff and not shown:
-        print("\n(no threads with activity since then)")
+    if filtered and not shown:
+        print("\n(no matching threads)" if args.author else "\n(no threads with activity since then)")
     scope = args.file if args.file else "the change"
     print(f"\n{unresolved_threads} unresolved thread(s) in {scope}"
-          + (f"; {shown} shown" if cutoff or args.unresolved else ""))
+          + (f"; {shown} shown" if filtered or args.unresolved else ""))
 
 
 def cmd_files(g, args):
@@ -1077,6 +1103,9 @@ def build_parser():
     s.add_argument("number", type=change_number)
     s.add_argument("--file", type=comment_file, metavar="PATH",
                    help="only this file's threads (or /PATCHSET_LEVEL, /COMMIT_MSG)")
+    s.add_argument("--author", type=author_arg, metavar="TEXT",
+                   help="only threads with a comment by this author (name, username, email "
+                        "or robot id; case-insensitive substring)")
     s.add_argument("--unresolved", action="store_true", help="only unresolved threads")
     s.add_argument("--no-robot", action="store_true",
                    help="leave out robot comments")
